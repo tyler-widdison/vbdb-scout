@@ -1,0 +1,86 @@
+import type { Theme } from "./types"
+
+export const DEFAULT_THEME = "Obsidian"
+
+export const themes: Theme[] = [
+  {
+    name: "Obsidian",
+    isDark: true,
+    colors: {
+      bg: "#0f0f0f",
+      fg: "#e8e4de",
+      surface: "#1a1a1a",
+      border: "#2a2a2a",
+      muted: "#6b6560",
+      accent: "#e8a642",
+      accentContrast: "#0f0f0f",
+      glow: "rgba(232, 166, 66, 0.12)",
+      gradientA: "#1a1510",
+      gradientB: "#0f0f0f",
+    },
+  },
+  {
+    name: "Midnight",
+    isDark: true,
+    colors: {
+      bg: "#0c1222",
+      fg: "#d8e2f0",
+      surface: "#141e33",
+      border: "#1e2d4a",
+      muted: "#5a6b85",
+      accent: "#00e5ff",
+      accentContrast: "#0c1222",
+      glow: "rgba(0, 229, 255, 0.10)",
+      gradientA: "#0f1a30",
+      gradientB: "#0c1222",
+    },
+  },
+  {
+    name: "Forest",
+    isDark: true,
+    colors: {
+      bg: "#0e150e",
+      fg: "#d4d8c8",
+      surface: "#161f16",
+      border: "#243024",
+      muted: "#607060",
+      accent: "#d4a853",
+      accentContrast: "#0e150e",
+      glow: "rgba(212, 168, 83, 0.10)",
+      gradientA: "#131d13",
+      gradientB: "#0e150e",
+    },
+  },
+  {
+    name: "Ember",
+    isDark: true,
+    colors: {
+      bg: "#1a1614",
+      fg: "#e6ddd5",
+      surface: "#231e1b",
+      border: "#352e2a",
+      muted: "#7a6e64",
+      accent: "#e85d4a",
+      accentContrast: "#1a1614",
+      glow: "rgba(232, 93, 74, 0.10)",
+      gradientA: "#201a16",
+      gradientB: "#1a1614",
+    },
+  },
+  {
+    name: "Washi",
+    isDark: false,
+    colors: {
+      bg: "#f4efe6",
+      fg: "#2a2420",
+      surface: "#ebe4d8",
+      border: "#d9cfbf",
+      muted: "#8a7e70",
+      accent: "#c45d3e",
+      accentContrast: "#fef8f0",
+      glow: "rgba(196, 93, 62, 0.08)",
+      gradientA: "#ece5d8",
+      gradientB: "#f4efe6",
+    },
+  },
+]
