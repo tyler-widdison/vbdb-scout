@@ -78,6 +78,13 @@ pub struct ScoutPlayRow {
     pub match_name: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ScoutCodeChange {
+    pub match_id: i64,
+    pub row_id: i64,
+    pub code: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ScoutFilterRow {
     pub relation: Option<String>,
@@ -113,7 +120,7 @@ struct ParsedCodeFields {
     players: String,
 }
 
-const SCOUT_ROW_CACHE_VERSION: i64 = 4;
+const SCOUT_ROW_CACHE_VERSION: i64 = 5;
 
 const SCHEMA: &str = "
 PRAGMA foreign_keys = ON;
@@ -715,6 +722,55 @@ pub fn get_scout_rows(db: &Connection, match_id: i64) -> Result<Vec<ScoutPlayRow
     }
 }
 
+pub fn update_scout_codes(db: &Connection, changes: &[ScoutCodeChange]) -> Result<()> {
+    if changes.is_empty() {
+        return Ok(());
+    }
+
+    let mut by_match: std::collections::BTreeMap<i64, Vec<&ScoutCodeChange>> =
+        std::collections::BTreeMap::new();
+    for change in changes {
+        by_match.entry(change.match_id).or_default().push(change);
+    }
+
+    for (match_id, match_changes) in by_match {
+        let stored_path: String = db.query_row(
+            "SELECT stored_path FROM scout_files WHERE match_id = ?1 ORDER BY id DESC LIMIT 1",
+            params![match_id],
+            |row| row.get(0),
+        )?;
+        let content = std::fs::read_to_string(&stored_path)
+            .map_err(|_| rusqlite::Error::InvalidPath(PathBuf::from(&stored_path)))?;
+        let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
+        let Some(marker_index) = lines.iter().position(|line| line.trim() == "[3SCOUT]") else {
+            return Ok(());
+        };
+
+        for change in match_changes {
+            if change.row_id <= 0 {
+                continue;
+            }
+            let line_index = marker_index + change.row_id as usize;
+            if line_index >= lines.len() || lines[line_index].trim_start().starts_with('[') {
+                continue;
+            }
+            let line = &lines[line_index];
+            let suffix = line
+                .split_once(';')
+                .map(|(_, rest)| format!(";{rest}"))
+                .unwrap_or_default();
+            lines[line_index] = format!("{}{}", change.code.trim(), suffix);
+        }
+
+        let trailing_newline = if content.ends_with('\n') { "\n" } else { "" };
+        std::fs::write(&stored_path, format!("{}{}", lines.join("\n"), trailing_newline))
+            .map_err(|_| rusqlite::Error::InvalidPath(PathBuf::from(&stored_path)))?;
+        rebuild_scout_row_cache(db, match_id, &stored_path)?;
+    }
+
+    Ok(())
+}
+
 fn scout_row_cache_count(db: &Connection, match_id: i64) -> Result<i64> {
     db.query_row(
         "SELECT COUNT(*) FROM scout_play_rows WHERE match_id = ?1",
@@ -1011,7 +1067,9 @@ fn parse_score_from_code(code: &str) -> Option<(String, String)> {
         return None;
     }
     if home.chars().all(|c| c.is_ascii_digit()) && away.chars().all(|c| c.is_ascii_digit()) {
-        return Some((home.to_string(), away.to_string()));
+        let home_score = home.parse::<i64>().ok()?.to_string();
+        let away_score = away.parse::<i64>().ok()?.to_string();
+        return Some((home_score, away_score));
     }
     None
 }

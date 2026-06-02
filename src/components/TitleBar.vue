@@ -1,31 +1,31 @@
 <script setup lang="ts">
-import { getCurrentWindow } from "@tauri-apps/api/window"
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
-const appWindow = getCurrentWindow()
+const appWindow = getCurrentWindow();
 
-let lastClick = 0
+let lastClick = 0;
 
 function handleTitleMouseDown() {
-  const now = Date.now()
+  const now = Date.now();
   if (now - lastClick < 400) {
-    appWindow.toggleMaximize()
-    lastClick = 0
-    return
+    appWindow.toggleMaximize();
+    lastClick = 0;
+    return;
   }
-  lastClick = now
-  appWindow.startDragging()
+  lastClick = now;
+  appWindow.startDragging();
 }
 
 function minimize() {
-  appWindow.minimize()
+  appWindow.minimize();
 }
 
 function toggleMaximize() {
-  appWindow.toggleMaximize()
+  appWindow.toggleMaximize();
 }
 
 function close() {
-  appWindow.close()
+  appWindow.close();
 }
 </script>
 
@@ -77,7 +77,9 @@ function close() {
   justify-content: center;
   font-size: 16px;
   cursor: pointer;
-  transition: background 140ms ease, color 140ms ease;
+  transition:
+    background 140ms ease,
+    color 140ms ease;
 }
 
 .controls button:hover {

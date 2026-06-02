@@ -30,7 +30,7 @@ const { open, toggleSettings } = useSettings();
         class="icon-btn"
         :class="{ active: open }"
         @click="toggleSettings"
-        title="Settings (Ctrl+,)"
+        title="Settings"
       >
         &#x2699;&#xFE0E;
       </button>

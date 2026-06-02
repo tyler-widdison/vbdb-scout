@@ -160,6 +160,26 @@ fn get_scout_rows(app: tauri::AppHandle, match_id: i64) -> Result<Vec<db::ScoutP
 }
 
 #[tauri::command]
+fn update_scout_codes(
+    app: tauri::AppHandle,
+    changes: Vec<db::ScoutCodeChange>,
+) -> Result<(), String> {
+    let state = get_db(&app)?;
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::update_scout_codes(&conn, &changes).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_stored_scout_files_path(app: tauri::AppHandle) -> Result<String, String> {
+    let state = get_db(&app)?;
+    Ok(state
+        .app_data_dir
+        .join("scout-files")
+        .to_string_lossy()
+        .to_string())
+}
+
+#[tauri::command]
 fn get_scout_video_path(app: tauri::AppHandle, match_id: i64) -> Result<Option<String>, String> {
     let state = get_db(&app)?;
     let conn = state.db.lock().map_err(|e| e.to_string())?;
@@ -501,6 +521,7 @@ pub fn run() {
             import_scout_files,
             get_scout_lines,
             get_scout_rows,
+            update_scout_codes,
             get_scout_rows_multi,
             get_scout_rows_multi_filtered,
             get_scout_video_path,
@@ -510,6 +531,7 @@ pub fn run() {
             set_auto_season,
             get_file_type,
             set_file_type,
+            get_stored_scout_files_path,
             export_montage_video,
         ])
         .run(tauri::generate_context!())

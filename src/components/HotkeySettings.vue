@@ -15,6 +15,16 @@ type HotkeyRow = {
 
 const rows: HotkeyRow[] = [
   {
+    action: "showSettings",
+    label: "Show settings",
+    description: "Open the settings modal.",
+  },
+  {
+    action: "deleteFile",
+    label: "Delete file",
+    description: "Delete the active file in the explorer.",
+  },
+  {
     action: "videoPlayPause",
     label: "Play/Pause",
     description: "Toggle playback in video panel.",
@@ -35,6 +45,16 @@ const rows: HotkeyRow[] = [
     description: "Skip video forward by 60 seconds.",
   },
   {
+    action: "pauseWhileEditingCode",
+    label: "Pause while editing code",
+    description: "Toggle playback while focus is in a code edit box.",
+  },
+  {
+    action: "rewindWhileEditingCode",
+    label: "Rewind while editing code",
+    description: "Rewind video while focus is in a code edit box.",
+  },
+  {
     action: "nextPlay",
     label: "Next play",
     description: "Move selection to next filtered play row.",
@@ -48,6 +68,11 @@ const rows: HotkeyRow[] = [
     action: "togglePlaySelection",
     label: "Add/Remove play",
     description: "Toggle active play in montage selection.",
+  },
+  {
+    action: "toggleSidebar",
+    label: "Toggle sidebar",
+    description: "Show or hide the file explorer sidebar.",
   },
 ];
 
@@ -63,7 +88,7 @@ function capture(action: ExplorerHotkeyAction, e: KeyboardEvent) {
     return;
   }
 
-  if (e.key === "Backspace" || e.key === "Delete") {
+  if (e.key === "Backspace") {
     setHotkey(action, null);
     recording.value = null;
     return;

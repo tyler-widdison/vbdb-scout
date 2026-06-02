@@ -1,18 +1,20 @@
-import { invoke } from "@tauri-apps/api/core"
+import { Schema } from "effect"
 import type { Association } from "../../types/database"
+import { AssociationSchema } from "../effect/schemas"
+import { tauri, tauriVoid } from "../effect/tauri"
 
 export function getAssociations(): Promise<Association[]> {
-  return invoke("get_associations")
+  return tauri("get_associations", {}, Schema.Array(AssociationSchema)) as Promise<Association[]>
 }
 
 export function createAssociation(name: string): Promise<Association> {
-  return invoke("create_association", { name })
+  return tauri("create_association", { name }, AssociationSchema) as Promise<Association>
 }
 
 export function renameAssociation(id: number, name: string): Promise<void> {
-  return invoke("rename_association", { id, name })
+  return tauriVoid("rename_association", { id, name })
 }
 
 export function deleteAssociation(id: number): Promise<void> {
-  return invoke("delete_association", { id })
+  return tauriVoid("delete_association", { id })
 }

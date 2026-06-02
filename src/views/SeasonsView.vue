@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
@@ -9,6 +9,13 @@ import {
   matchesHotkey,
   useExplorerHotkeys,
 } from "../composables/useExplorerHotkeys";
+import {
+  GRADES,
+  SKILLS,
+  ZONES,
+  getSkillTypes,
+  getSubTypes,
+} from "../constants/datavolley";
 import ExplorerDrawer from "../components/ExplorerDrawer.vue";
 import MatchEmptyState from "../components/match/MatchEmptyState.vue";
 import ScoutLinesBox from "../components/match/ScoutLinesBox.vue";
@@ -33,6 +40,8 @@ const playToggleToken = ref(0);
 const videoStatus = ref("");
 const clipStartOffset = ref("0");
 const clipEndOffset = ref("+8");
+const clipStartInput = ref<HTMLInputElement | null>(null);
+const clipEndInput = ref<HTMLInputElement | null>(null);
 const advancedFiltersOpen = ref(false);
 type RuleRelation =
   | "equal"
@@ -122,6 +131,8 @@ const selectedMontageClips = ref<
 >([]);
 const exportStatus = ref("");
 const exportRunning = ref(false);
+const scoutEditStatus = ref("");
+const scoutDirtyEditCount = ref(0);
 const seekStepSeconds = ref(3);
 let unlistenMontageProgress: UnlistenFn | null = null;
 
@@ -164,6 +175,30 @@ function getMinPanelX() {
 }
 
 function onKeydown(e: KeyboardEvent) {
+  if (scoutBox.value?.isEditingCode()) {
+    if (matchesHotkey(e, hotkeys.value.pauseWhileEditingCode)) {
+      e.preventDefault();
+      onTogglePlayback();
+      return;
+    }
+    if (matchesHotkey(e, hotkeys.value.rewindWhileEditingCode)) {
+      e.preventDefault();
+      videoPanel.value?.seekBy(-seekStepSeconds.value);
+      return;
+    }
+  }
+
+  if (e.shiftKey && e.key === "<") {
+    e.preventDefault();
+    focusClipOffset("start");
+    return;
+  }
+  if (e.ctrlKey && (e.key === "." || e.key === ">")) {
+    e.preventDefault();
+    focusClipOffset("end");
+    return;
+  }
+
   if (isEditableTarget(e.target)) return;
 
   if (matchesHotkey(e, hotkeys.value.videoPlayPause)) {
@@ -201,6 +236,11 @@ function onKeydown(e: KeyboardEvent) {
     scoutBox.value?.toggleActiveSelection();
     return;
   }
+  if (e.ctrlKey && e.key.toLowerCase() === "e") {
+    e.preventDefault();
+    scoutBox.value?.startEditActive();
+    return;
+  }
 
   if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "c") {
     e.preventDefault();
@@ -220,7 +260,7 @@ function onKeydown(e: KeyboardEvent) {
     filterInput?.select();
     return;
   }
-  if (e.ctrlKey && e.key.toLowerCase() === "b") {
+  if (matchesHotkey(e, hotkeys.value.toggleSidebar)) {
     e.preventDefault();
     explorerVisible.value = !explorerVisible.value;
     return;
@@ -602,6 +642,31 @@ function parseOffset(raw: string, fallback: number): number {
   return Number.isFinite(value) ? value : fallback;
 }
 
+function formatOffset(value: number): string {
+  if (value > 0) return `+${value}`;
+  return String(value);
+}
+
+function focusClipOffset(target: "start" | "end") {
+  const input = target === "start" ? clipStartInput.value : clipEndInput.value;
+  input?.focus();
+  input?.select();
+}
+
+function adjustClipOffset(target: "start" | "end", delta: number) {
+  const current =
+    target === "start" ? clipStartOffset.value : clipEndOffset.value;
+  const next = parseOffset(current, target === "start" ? 0 : 8) + delta;
+  if (target === "start") clipStartOffset.value = formatOffset(next);
+  else clipEndOffset.value = formatOffset(next);
+}
+
+function onClipOffsetKeydown(target: "start" | "end", e: KeyboardEvent) {
+  if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+  e.preventDefault();
+  adjustClipOffset(target, e.key === "ArrowUp" ? 1 : -1);
+}
+
 function onClipEnded() {
   if (!autoAdvanceMontage.value) return;
   scoutBox.value?.playNextMontageRow();
@@ -629,21 +694,42 @@ function addFilterRow(relation: RuleRelation) {
   codeFilters.value.push(createFilterRow(relation));
 }
 
-function showField(
-  filter: ChainFilterRow,
-  field: "number" | "subType" | "combo" | "zones" | "players",
-) {
+type FilterField =
+  | "number"
+  | "subType"
+  | "combo"
+  | "startZone"
+  | "endZone"
+  | "skillType"
+  | "players";
+
+const SKILL_FIELDS: Record<string, FilterField[]> = {
+  S: ["number", "subType", "startZone", "endZone"],
+  R: ["number", "subType", "startZone", "endZone", "skillType", "players"],
+  A: [
+    "number",
+    "subType",
+    "combo",
+    "startZone",
+    "endZone",
+    "skillType",
+    "players",
+  ],
+  B: ["number", "subType", "startZone", "endZone", "players"],
+  D: ["number", "subType", "startZone", "endZone", "skillType", "players"],
+  E: ["number", "subType", "startZone", "endZone"],
+  F: ["number", "subType", "startZone", "endZone"],
+};
+
+function showField(filter: ChainFilterRow, field: FilterField): boolean {
   const skill = filter.skill.trim().toUpperCase();
   if (!skill) return true;
-  if (skill === "S") return ["number", "subType", "zones"].includes(field);
-  if (skill === "R")
-    return ["number", "subType", "zones", "players"].includes(field);
-  if (skill === "A")
-    return ["number", "subType", "combo", "zones", "players"].includes(field);
-  if (skill === "B" || skill === "D")
-    return ["number", "subType", "zones", "players"].includes(field);
-  return field !== "combo";
+  return SKILL_FIELDS[skill]?.includes(field) ?? field !== "combo";
 }
+
+const baseSkillForDatalist = computed(() => {
+  return codeFilters.value[0]?.skill?.trim().toUpperCase() ?? "";
+});
 
 function removeFilterRow(index: number) {
   if (index === 0) return;
@@ -665,8 +751,14 @@ function onSelectedClipsChange(
   selectedMontageClips.value = clips;
 }
 
+function onScoutEditStatusChange(payload: { status: string; dirtyCount: number }) {
+  scoutEditStatus.value = payload.status;
+  scoutDirtyEditCount.value = payload.dirtyCount;
+}
+
 async function exportSelectedMontage() {
-  const clips = scoutBox.value?.getSelectedMontageClips() ?? selectedMontageClips.value;
+  const clips =
+    scoutBox.value?.getSelectedMontageClips() ?? selectedMontageClips.value;
   if (clips.length === 0 || exportRunning.value) return;
   const outputPath = await save({
     title: "Export montage",
@@ -696,6 +788,7 @@ async function exportSelectedMontage() {
       ref="explorerDrawer"
       v-model="explorerVisible"
       :selected-match-ids="selectedMatchIds"
+      show-team-filter
       @open-match="openMatch"
       @open-matches="openMatches"
     />
@@ -739,16 +832,20 @@ async function exportSelectedMontage() {
             </button>
             <div class="clip-window-list">
               <input
+                ref="clipStartInput"
                 v-model="clipStartOffset"
                 class="main-code-search clip-offset"
                 type="text"
                 placeholder="start (s)"
+                @keydown="onClipOffsetKeydown('start', $event)"
               />
               <input
+                ref="clipEndInput"
                 v-model="clipEndOffset"
                 class="main-code-search clip-offset"
                 type="text"
                 placeholder="end (s)"
+                @keydown="onClipOffsetKeydown('end', $event)"
               />
             </div>
             <span class="drag-dots">::</span>
@@ -767,10 +864,10 @@ async function exportSelectedMontage() {
                 v-model="codeFilters[0].team"
                 class="main-code-search"
                 type="text"
+                list="dl-team"
                 placeholder="* / a / team"
               />
               <input
-                v-if="showField(codeFilters[0], 'number')"
                 v-model="codeFilters[0].number"
                 class="main-code-search"
                 type="text"
@@ -780,12 +877,22 @@ async function exportSelectedMontage() {
                 v-model="codeFilters[0].skill"
                 class="main-code-search"
                 type="text"
+                list="dl-skill"
                 placeholder="skill"
+              />
+              <input
+                v-if="showField(codeFilters[0], 'subType')"
+                v-model="codeFilters[0].subType"
+                class="main-code-search"
+                type="text"
+                :list="baseSkillForDatalist ? 'dl-subtype' : undefined"
+                placeholder="sub"
               />
               <input
                 v-model="codeFilters[0].grade"
                 class="main-code-search"
                 type="text"
+                list="dl-grade"
                 placeholder="grade"
               />
               <input
@@ -794,6 +901,37 @@ async function exportSelectedMontage() {
                 class="main-code-search"
                 type="text"
                 placeholder="combo"
+              />
+              <input
+                v-if="showField(codeFilters[0], 'startZone')"
+                v-model="codeFilters[0].startZone"
+                class="main-code-search field-zone"
+                type="text"
+                list="dl-zone"
+                placeholder="start"
+              />
+              <input
+                v-if="showField(codeFilters[0], 'endZone')"
+                v-model="codeFilters[0].endZone"
+                class="main-code-search field-zone"
+                type="text"
+                list="dl-zone"
+                placeholder="end"
+              />
+              <input
+                v-if="showField(codeFilters[0], 'skillType')"
+                v-model="codeFilters[0].skillType"
+                class="main-code-search"
+                type="text"
+                :list="baseSkillForDatalist ? 'dl-skilltype' : undefined"
+                placeholder="type"
+              />
+              <input
+                v-if="showField(codeFilters[0], 'players')"
+                v-model="codeFilters[0].players"
+                class="main-code-search field-narrow"
+                type="text"
+                placeholder="plyr"
               />
               <button
                 class="advanced-filter-btn"
@@ -815,6 +953,41 @@ async function exportSelectedMontage() {
             </div>
           </div>
         </div>
+        <datalist id="dl-team">
+          <option value="*"></option>
+          <option value="a"></option>
+        </datalist>
+        <datalist id="dl-skill">
+          <option v-for="s in SKILLS" :key="s.value" :value="s.value">
+            {{ s.label }}
+          </option>
+        </datalist>
+        <datalist id="dl-subtype">
+          <option
+            v-for="o in getSubTypes(baseSkillForDatalist)"
+            :key="o.value"
+            :value="o.value"
+          >
+            {{ o.label }}
+          </option>
+        </datalist>
+        <datalist id="dl-grade">
+          <option v-for="g in GRADES" :key="g.value" :value="g.value">
+            {{ g.label }}
+          </option>
+        </datalist>
+        <datalist id="dl-zone">
+          <option v-for="z in ZONES" :key="z.value" :value="z.value"></option>
+        </datalist>
+        <datalist id="dl-skilltype">
+          <option
+            v-for="o in getSkillTypes(baseSkillForDatalist)"
+            :key="o.value"
+            :value="o.value"
+          >
+            {{ o.label }}
+          </option>
+        </datalist>
         <div
           v-if="advancedFiltersOpen"
           class="advanced-overlay"
@@ -835,6 +1008,7 @@ async function exportSelectedMontage() {
                 <thead>
                   <tr>
                     <th>Rule</th>
+                    <th>Cond.</th>
                     <th>Team</th>
                     <th>No.</th>
                     <th>Skill</th>
@@ -864,6 +1038,15 @@ async function exportSelectedMontage() {
                         >
                           {{ option.label }}
                         </option>
+                      </select>
+                    </td>
+                    <td>
+                      <select
+                        v-model="filter.condition"
+                        class="advanced-input condition-select"
+                      >
+                        <option value="contains">In</option>
+                        <option value="not_contains">Not in</option>
                       </select>
                     </td>
                     <td>
@@ -946,12 +1129,22 @@ async function exportSelectedMontage() {
         >
           <div
             class="drag-handle"
+            :class="{ dirty: scoutDirtyEditCount > 0 }"
             @pointerdown="startDrag('scout', $event)"
             @pointermove="onDrag"
             @pointerup="stopDrag"
             @pointercancel="stopDrag"
           >
             <span class="drag-dots">::</span>
+            <div v-if="scoutDirtyEditCount > 0" class="title-edit-status">
+              <span>{{ scoutEditStatus }}</span>
+              <button @pointerdown.stop @click.stop="scoutBox?.savePendingEdits()">
+                Save edits
+              </button>
+              <button @pointerdown.stop @click.stop="scoutBox?.discardPendingEdits()">
+                Discard
+              </button>
+            </div>
           </div>
           <ScoutLinesBox
             ref="scoutBox"
@@ -963,6 +1156,7 @@ async function exportSelectedMontage() {
             @seek-time="onSeekTime"
             @toggle-playback="onTogglePlayback"
             @selected-clips-change="onSelectedClipsChange"
+            @edit-status-change="onScoutEditStatusChange"
           />
         </div>
         <div v-if="exportStatus" class="export-status">
@@ -1099,7 +1293,7 @@ async function exportSelectedMontage() {
 .advanced-table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 1040px;
+  min-width: 1100px;
 }
 
 .advanced-table th {
@@ -1144,6 +1338,12 @@ async function exportSelectedMontage() {
 
 .advanced-select {
   min-width: 150px;
+}
+
+.condition-select {
+  min-width: 56px;
+  font-size: 11px;
+  padding: 4px 5px;
 }
 
 .advanced-remove {
@@ -1354,6 +1554,16 @@ async function exportSelectedMontage() {
   outline: 1px solid var(--accent-border);
 }
 
+.field-zone {
+  flex: 0 0 62px;
+  width: 62px;
+}
+
+.field-narrow {
+  flex: 0 0 62px;
+  width: 62px;
+}
+
 .floating-wrap {
   position: absolute;
   top: 0;
@@ -1376,6 +1586,37 @@ async function exportSelectedMontage() {
   font-size: 12px;
   cursor: move;
   user-select: none;
+}
+
+.drag-handle.dirty {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-soft));
+  background: color-mix(in srgb, var(--accent-soft) 42%, var(--surface));
+  color: var(--fg);
+}
+
+.title-edit-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 10px;
+  overflow: hidden;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.title-edit-status span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.title-edit-status button {
+  border: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--bg) 78%, transparent);
+  color: var(--fg);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
 }
 
 .drag-dots {

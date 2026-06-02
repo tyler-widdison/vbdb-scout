@@ -1,23 +1,31 @@
 <script setup lang="ts">
 import { ask, open } from "@tauri-apps/plugin-dialog";
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useExplorerContext } from "../../composables/useExplorerContext";
+import {
+  matchesHotkey,
+  useExplorerHotkeys,
+} from "../../composables/useExplorerHotkeys";
 import { getAutoSeason } from "../../services/api/settings";
 import { importScoutFiles } from "../../services/api/scoutFiles";
 import type { Match } from "../../types/database";
 import * as api from "../../services/api";
+
+const { hotkeys } = useExplorerHotkeys();
 
 const props = withDefaults(
   defineProps<{
     allowMultiSelect?: boolean;
     maxVisibleFiles?: number;
     showHeaderActions?: boolean;
+    showTeamFilter?: boolean;
     selectedMatchIds?: number[];
   }>(),
   {
     allowMultiSelect: true,
     maxVisibleFiles: 0,
     showHeaderActions: true,
+    showTeamFilter: true,
     selectedMatchIds: () => [],
   },
 );
@@ -46,8 +54,19 @@ const {
 } = useExplorerContext();
 const showVideoOnly = ref(false);
 const allRows = ref<FileRow[]>([]);
+const teams = ref<string[]>([]);
+const teamSearch = ref("");
+
 const rows = computed(() => {
   let filtered = allRows.value;
+  if (teamSearch.value) {
+    const q = teamSearch.value.toLowerCase();
+    filtered = filtered.filter(
+      (row) =>
+        (row.team_home?.toLowerCase().includes(q) ?? false) ||
+        (row.team_away?.toLowerCase().includes(q) ?? false),
+    );
+  }
   if (selectedTeamNames.value.length > 0) {
     const names = new Set(selectedTeamNames.value);
     filtered = filtered.filter(
@@ -127,8 +146,13 @@ function displayName(row: FileRow): string {
 
 watch(
   selectedSeasonIds,
-  async () => {
+  async (ids) => {
     await refresh();
+    if (ids.length === 0) {
+      teams.value = [];
+      return;
+    }
+    teams.value = await api.getTeamsForSeasons(ids);
   },
   { deep: true },
 );
@@ -219,11 +243,18 @@ function syncExternalSelection(ids: number[]) {
   selectedIds.value = next;
   activeMatchId.value = next[0];
   syncingExternalSelection.value = false;
+  nextTick(scrollActiveIntoView);
+}
+
+function scrollActiveIntoView() {
+  const el = listEl.value?.querySelector<HTMLDivElement>(".file-row.active");
+  el?.scrollIntoView({ block: "nearest" });
 }
 
 function sameIds(left: number[], right: number[]) {
   return (
-    left.length === right.length && left.every((id, index) => id === right[index])
+    left.length === right.length &&
+    left.every((id, index) => id === right[index])
   );
 }
 
@@ -333,6 +364,8 @@ async function deleteOne(id: number) {
 }
 
 async function onKeydown(e: KeyboardEvent) {
+  if ((e.target as HTMLElement).tagName === "INPUT") return;
+  e.stopPropagation();
   if (
     props.allowMultiSelect &&
     (e.key === " " || e.key === "Spacebar") &&
@@ -376,6 +409,12 @@ async function onKeydown(e: KeyboardEvent) {
   if (e.key === "F2") {
     e.preventDefault();
     await renameSelected();
+    return;
+  }
+
+  if (matchesHotkey(e, hotkeys.value.deleteFile)) {
+    e.preventDefault();
+    await deleteSelected();
     return;
   }
 
@@ -424,7 +463,9 @@ async function uploadMatches() {
       parts.push(`Imported ${result.imported.length} file(s)`);
     }
     if (result.failed.length > 0) {
-      parts.push(`${result.failed.length} file(s) skipped (${result.failed[0].reason})`);
+      parts.push(
+        `${result.failed.length} file(s) skipped (${result.failed[0].reason})`,
+      );
     }
     uploadSuccess.value = parts.join(". ");
     refreshAfterImport();
@@ -441,22 +482,35 @@ defineExpose({ refresh });
 
 <template>
   <div ref="listEl" class="season-tree" tabindex="0" @keydown="onKeydown">
+    <input
+      class="team-search"
+      type="text"
+      placeholder="Search teams..."
+      v-model="teamSearch"
+    />
     <div class="tree-header">
-      <div>
-        <span class="tree-title">Explorer</span>
+      <div class="tree-header-left">
         <span class="tree-hint">{{ fileCountLabel }}</span>
       </div>
       <div v-if="props.showHeaderActions" class="header-actions">
         <button
           v-if="props.allowMultiSelect"
-          class="action-btn"
+          class="action-btn visible-files"
           :class="{ active: allVisibleSelected }"
           :title="
             allVisibleSelected ? 'Clear selection' : 'Select all visible files'
           "
           @click="toggleSelectAll"
         >
-          &#x2611;
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            height="20px"
+            viewBox="0 -960 960 960"
+            width="20px"
+            fill="#e3e3e3"
+          >
+            <path d="M400-301 240-461l51-51 109 109 269-269 51 51-320 320Z" />
+          </svg>
         </button>
         <button
           v-if="props.allowMultiSelect"
@@ -466,7 +520,17 @@ defineExpose({ refresh });
           @click="deleteSelectedRows"
           aria-label="Delete selected files"
         >
-          <span aria-hidden="true">Del</span>
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            height="20px"
+            viewBox="0 -960 960 960"
+            width="20px"
+            fill="#e3e3e3"
+          >
+            <path
+              d="M312-144q-29.7 0-50.85-21.15Q240-186.3 240-216v-480h-48v-72h192v-48h192v48h192v72h-48v479.57Q720-186 698.85-165T648-144H312Zm336-552H312v480h336v-480ZM384-288h72v-336h-72v336Zm120 0h72v-336h-72v336ZM312-696v480-480Z"
+            />
+          </svg>
         </button>
         <button
           class="action-btn"
@@ -496,13 +560,13 @@ defineExpose({ refresh });
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
-            height="24px"
+            height="20px"
             viewBox="0 -960 960 960"
-            width="24px"
+            width="20px"
             fill="#e3e3e3"
           >
             <path
-              d="M480-260q75 0 127.5-52.5T660-440q0-75-52.5-127.5T480-620q-75 0-127.5 52.5T300-440q0 75 52.5 127.5T480-260Zm0-80q-42 0-71-29t-29-71q0-42 29-71t71-29q42 0 71 29t29 71q0 42-29 71t-71 29ZM160-120q-33 0-56.5-23.5T80-200v-480q0-33 23.5-56.5T160-760h126l74-80h240l74 80h126q33 0 56.5 23.5T880-680v480q0 33-23.5 56.5T800-120H160Zm0-80h640v-480H638l-73-80H395l-73 80H160v480Zm320-240Z"
+              d="M360-264h168q10.2 0 17.1-6.9 6.9-6.9 6.9-17.1v-50l72 50v-168l-72 50v-50q0-10.2-6.9-17.1-6.9-6.9-17.1-6.9H360q-10.2 0-17.1 6.9-6.9 6.9-6.9 17.1v168q0 10.2 6.9 17.1 6.9 6.9 17.1 6.9ZM263.72-96Q234-96 213-117.15T192-168v-624q0-29.7 21.15-50.85Q234.3-864 264-864h312l192 192v504q0 29.7-21.16 50.85Q725.68-96 695.96-96H263.72ZM528-624v-168H264v624h432v-456H528ZM264-792v189-189 624-624Z"
             />
           </svg>
         </button>
@@ -522,31 +586,21 @@ defineExpose({ refresh });
       >
         <label v-if="props.allowMultiSelect" class="row-select" @click.stop>
           <input
+            class="checkbox-margin"
             type="checkbox"
             :checked="selectedIds.includes(row.id)"
             @change="toggleRowSelection(row.id)"
           />
         </label>
-        <span class="name">
+        <span class="name" :class="{ 'no-video': !row.has_video }">
           {{ displayName(row) }}
-          <span v-if="row.has_video" class="video-badge" title="Video linked">
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              height="20px"
-              viewBox="0 -960 960 960"
-              width="20px"
-              fill="#e3e3e3"
-            >
-              <path
-                d="M480-264q72 0 120-49t48-119q0-69-48-118.5T480-600q-72 0-120 49.5t-48 119q0 69.5 48 118.5t120 49Zm0-72q-42 0-69-28.13T384-433q0-39.9 27-67.45Q438-528 480-528t69 27.55q27 27.55 27 67.45 0 40.74-27 68.87Q522-336 480-336ZM168-144q-29 0-50.5-21.5T96-216v-432q0-29 21.5-50.5T168-720h120l72-96h240l72 96h120q29.7 0 50.85 21.5Q864-677 864-648v432q0 29-21.15 50.5T792-144H168Zm0-72h624v-432H636l-72.1-96H396l-72 96H168v432Zm312-217Z"
-              />
-            </svg>
-          </span>
-          <span class="meta">
-            {{ row.associationName }} / {{ row.seasonName }}
-          </span>
         </span>
-        <span v-if="!showPrependingDate && row.match_date" class="match-date">{{ row.match_date }}</span>
+        <span class="meta">
+          {{ row.associationName }} / {{ row.seasonName }}
+        </span>
+        <span v-if="!showPrependingDate && row.match_date" class="match-date">{{
+          row.match_date
+        }}</span>
         <button
           class="remove"
           title="Delete file"
@@ -581,10 +635,82 @@ defineExpose({ refresh });
 
 .tree-header {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 8px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border-soft);
+}
+
+.tree-header-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.team-search {
+  min-width: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  background: var(--surface-soft);
+  color: var(--fg);
+  font-size: 12px;
+  outline: none;
+  padding: 4px 4px;
+  margin-left: 4px;
+  margin-right: 4px;
+  margin-top: 2px;
+  margin-bottom: 2px;
+}
+
+.team-search::placeholder {
+  color: var(--text-muted);
+}
+
+.team-search:focus {
+  border-color: var(--accent-border);
+}
+
+.team-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-height: 96px;
+  overflow-y: auto;
+}
+
+.team-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px 6px;
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  background: transparent;
+  user-select: none;
+}
+
+.team-chip input {
+  display: none;
+}
+
+.team-chip:hover {
+  border-color: var(--accent-border);
+  color: var(--fg);
+}
+
+.team-chip.active {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+.team-empty {
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .header-actions {
@@ -602,10 +728,10 @@ defineExpose({ refresh });
 }
 
 .tree-hint {
-  display: block;
-  margin-top: 2px;
+  flex-shrink: 0;
   color: var(--text-muted);
   font-size: 11px;
+  white-space: nowrap;
 }
 
 .action-btn {
@@ -649,19 +775,14 @@ defineExpose({ refresh });
 
 .tree-body {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: 6px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
 }
 
 .file-row {
   position: relative;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
   border: 1px solid transparent;
   border-radius: 6px;
   background: none;
@@ -688,7 +809,8 @@ defineExpose({ refresh });
 .row-select {
   position: absolute;
   left: 8px;
-  top: 8px;
+  top: 50%;
+  transform: translateY(-50%);
   display: inline-flex;
   align-items: center;
 }
@@ -707,10 +829,9 @@ defineExpose({ refresh });
   white-space: nowrap;
 }
 
-.video-badge {
-  display: inline-block;
-  margin-left: 4px;
-  opacity: 0.75;
+.name.no-video {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-radius: 3px;
 }
 
 .meta {
@@ -733,13 +854,14 @@ defineExpose({ refresh });
 .remove {
   position: absolute;
   right: 8px;
-  top: 6px;
   width: 20px;
   height: 20px;
   border: 1px solid transparent;
   border-radius: 5px;
   background: transparent;
   color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
   cursor: pointer;
   opacity: 0;
 }
@@ -800,5 +922,9 @@ defineExpose({ refresh });
   margin: 6px 8px 0;
   color: #4caf50;
   font-size: 12px;
+}
+
+.visible-files {
+  margin-left: 2px;
 }
 </style>

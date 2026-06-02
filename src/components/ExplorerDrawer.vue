@@ -159,6 +159,7 @@ defineExpose({ refresh });
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .tree-drawer.collapsed {
@@ -252,6 +253,7 @@ defineExpose({ refresh });
   border: 0;
   border-radius: 0;
   padding: 3px 28px 3px 24px;
+
   font-family:
     ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
     "Courier New", monospace;
@@ -285,15 +287,6 @@ defineExpose({ refresh });
   font-size: 12px;
 }
 
-.file-list :deep(.video-badge) {
-  margin-left: 6px;
-}
-
-.file-list :deep(.video-badge svg) {
-  width: 13px;
-  height: 13px;
-}
-
 .file-list :deep(.meta) {
   display: none;
 }
@@ -307,8 +300,7 @@ defineExpose({ refresh });
   padding-left: 10px;
 }
 
-.file-list.no-icons :deep(.file-row::before),
-.file-list.no-icons :deep(.video-badge) {
+.file-list.no-icons :deep(.file-row::before) {
   display: none;
 }
 </style>

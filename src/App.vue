@@ -3,6 +3,10 @@ import { onBeforeUnmount, onMounted } from "vue";
 import { useTheme } from "./composables/useTheme";
 import { useSettings } from "./composables/useSettings";
 import { useHotkey } from "./composables/useHotkey";
+import {
+  matchesHotkey,
+  useExplorerHotkeys,
+} from "./composables/useExplorerHotkeys";
 import { useRouter } from "vue-router";
 import TitleBar from "./components/TitleBar.vue";
 import Sidebar from "./components/Sidebar.vue";
@@ -10,8 +14,15 @@ import Sidebar from "./components/Sidebar.vue";
 useTheme();
 const router = useRouter();
 const { toggleSettings, closeSettings } = useSettings();
+const { hotkeys } = useExplorerHotkeys();
 
-useHotkey({ key: ",", ctrl: true }, () => toggleSettings());
+function onSettingsHotkey(e: KeyboardEvent) {
+  if (matchesHotkey(e, hotkeys.value.showSettings)) {
+    e.preventDefault();
+    toggleSettings();
+  }
+}
+
 useHotkey({ key: "Escape" }, () => closeSettings());
 useHotkey({ key: "E", ctrl: true, shift: true }, async () => {
   if (router.currentRoute.value.name !== "home")
@@ -52,8 +63,14 @@ function onGlobalKeydown(e: KeyboardEvent) {
   }
 }
 
-onMounted(() => window.addEventListener("keydown", onGlobalKeydown));
-onBeforeUnmount(() => window.removeEventListener("keydown", onGlobalKeydown));
+onMounted(() => {
+  window.addEventListener("keydown", onGlobalKeydown);
+  window.addEventListener("keydown", onSettingsHotkey);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", onGlobalKeydown);
+  window.removeEventListener("keydown", onSettingsHotkey);
+});
 </script>
 
 <template>
@@ -202,7 +219,7 @@ a:focus-visible {
 
 .content {
   flex: 1;
-  overflow: auto;
+  overflow: hidden;
 }
 
 h1,

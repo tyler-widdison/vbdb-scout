@@ -3,13 +3,18 @@ import { ref } from "vue";
 export type ExplorerHotkeyAction =
   | "newSeason"
   | "newAssociation"
+  | "showSettings"
+  | "deleteFile"
   | "videoPlayPause"
   | "videoSeekForward"
   | "videoSeekBackward"
   | "videoSeekForwardOneMinute"
+  | "pauseWhileEditingCode"
+  | "rewindWhileEditingCode"
   | "nextPlay"
   | "previousPlay"
-  | "togglePlaySelection";
+  | "togglePlaySelection"
+  | "toggleSidebar";
 
 export type HotkeyBinding = {
   key: string;
@@ -30,6 +35,14 @@ const defaults: Record<ExplorerHotkeyAction, HotkeyBinding | null> = {
     alt: false,
     meta: false,
   },
+  showSettings: {
+    key: ",",
+    ctrl: true,
+    shift: false,
+    alt: false,
+    meta: false,
+  },
+  deleteFile: null,
   videoPlayPause: {
     key: " ",
     ctrl: false,
@@ -52,6 +65,20 @@ const defaults: Record<ExplorerHotkeyAction, HotkeyBinding | null> = {
     meta: false,
   },
   videoSeekForwardOneMinute: null,
+  pauseWhileEditingCode: {
+    key: "R",
+    ctrl: true,
+    shift: false,
+    alt: false,
+    meta: false,
+  },
+  rewindWhileEditingCode: {
+    key: "U",
+    ctrl: true,
+    shift: false,
+    alt: false,
+    meta: false,
+  },
   nextPlay: {
     key: "ArrowDown",
     ctrl: false,
@@ -69,6 +96,13 @@ const defaults: Record<ExplorerHotkeyAction, HotkeyBinding | null> = {
   togglePlaySelection: {
     key: "Enter",
     ctrl: false,
+    shift: false,
+    alt: false,
+    meta: false,
+  },
+  toggleSidebar: {
+    key: "b",
+    ctrl: true,
     shift: false,
     alt: false,
     meta: false,

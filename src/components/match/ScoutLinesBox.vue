@@ -1,11 +1,19 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
   getScoutRows,
   getScoutRowsMulti,
   getScoutRowsMultiFiltered,
   getScoutVideoPath,
+  updateScoutCodes,
 } from "../../services/api/scoutFiles";
 import {
   matchesHotkey,
@@ -56,6 +64,7 @@ const emit = defineEmits<{
       video_time_seconds: number;
     }[],
   ];
+  editStatusChange: [payload: { status: string; dirtyCount: number }];
 }>();
 
 const rows = ref<ScoutPlayRow[]>([]);
@@ -74,9 +83,32 @@ const tableScrollEl = ref<HTMLElement | null>(null);
 const selectedRowIds = ref<Set<string>>(new Set());
 const autoSelectFilteredPlays = ref(false);
 const { hotkeys } = useExplorerHotkeys();
+const codeEditSaveMode = ref<"after_edit" | "end_of_editing">("after_edit");
+const editingKey = ref<string | null>(null);
+const continuousEditMode = ref(false);
+const lastEditField = ref("team");
+const editingFields = ref({
+  team: "",
+  number: "",
+  skill: "",
+  subType: "",
+  grade: "",
+  startZone: "",
+  endZone: "",
+  skillType: "",
+  players: "",
+});
+const originalEditingFields = ref({ ...editingFields.value });
+const editStatus = ref("");
+const editActiveIndex = ref<number | null>(null);
+const visibleColumns = ref({ videoTime: true, set: true, score: true });
+const dirtyCodes = ref<
+  Map<string, { match_id: number; row_id: number; code: string }>
+>(new Map());
 let seekRequestToken = 0;
 let loadRequestToken = 0;
 let loadDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let suppressNextBlurCommit = false;
 const LOAD_CHUNK_SIZE = 12;
 const LARGE_SELECTION_LIMIT = 25;
 const MAX_VISIBLE_ROWS = 5000;
@@ -85,14 +117,25 @@ function rowSelectionKey(row: ScoutPlayRow): string {
   return `${row.match_id ?? "single"}:${row.row_id}`;
 }
 
+function rowEditKey(row: ScoutPlayRow): string {
+  return `${row.match_id ?? props.matchIds[0] ?? "single"}:${row.row_id}`;
+}
+
+function rowMatchId(row: ScoutPlayRow): number | null {
+  return (
+    row.match_id ?? (props.matchIds.length === 1 ? props.matchIds[0] : null)
+  );
+}
+
 function parseCodeFields(code: string | null | undefined) {
   const normalized = (code ?? "").toUpperCase().replace(/\s+/g, "");
   const main = normalized.split(";")[0] ?? "";
   const chars = [...main];
   const team = chars[0] ?? "";
-  const number = /\d/.test(chars[1] ?? "") && /\d/.test(chars[2] ?? "")
-    ? `${chars[1]}${chars[2]}`
-    : "";
+  const number =
+    /\d/.test(chars[1] ?? "") && /\d/.test(chars[2] ?? "")
+      ? `${chars[1]}${chars[2]}`
+      : "";
   const skill = number ? (chars[3] ?? "") : "";
   let grade = "";
   let combo = "";
@@ -107,15 +150,37 @@ function parseCodeFields(code: string | null | undefined) {
     if (isGradeChar(chars[5] ?? "")) grade = chars[5] ?? "";
   }
 
+  let skillType = "";
+  let players = "";
+  if ((chars[12] ?? "") !== "~") {
+    skillType = chars[12] ?? "";
+  }
+  if ((chars[13] ?? "") !== "~") {
+    players = chars[13] ?? "";
+  }
+
   let startZone = "";
   let endZone = "";
-  let skillType = "";
-  const tailMatch = main.match(/~+([1-9])([1-9])([A-Z]?)([A-Z]?)(\d?)$/);
-  if (tailMatch) {
-    startZone = tailMatch[1] ?? "";
-    endZone = tailMatch[2] ?? "";
-    skillType = tailMatch[3] ?? "";
-    subType = tailMatch[4] ?? "";
+  const tailParts = main.split("~");
+  const tail = tailParts[tailParts.length - 1] ?? "";
+  const tailChars = [...tail];
+  if (
+    tailParts.length > 1 &&
+    tailChars.length >= 2 &&
+    /\d/.test(tailChars[0]) &&
+    /\d/.test(tailChars[1])
+  ) {
+    startZone = tailChars[0];
+    endZone = tailChars[1];
+    if (!skillType && /[A-Z]/.test(tailChars[2] ?? "")) {
+      skillType = tailChars[2];
+    }
+    if (/[A-Z]/.test(tailChars[3] ?? "")) {
+      subType = tailChars[3];
+    }
+    if (!players && /\d/.test(tailChars[4] ?? "")) {
+      players = tailChars[4];
+    }
   }
 
   if (skill === "R") {
@@ -126,6 +191,10 @@ function parseCodeFields(code: string | null | undefined) {
       skillType = receptionLetters[0] ?? "";
       subType = receptionLetters[1] ?? "";
     }
+  }
+
+  if (skill === "A" && players === "3") {
+    players = "0";
   }
 
   return {
@@ -139,8 +208,78 @@ function parseCodeFields(code: string | null | undefined) {
     startZone,
     endZone,
     skillType,
-    players: tailMatch?.[5] ?? "",
+    players,
   };
+}
+
+function codeToEditFields(code: string) {
+  const parsed = parseCodeFields(code);
+  return {
+    team: parsed.team.toLowerCase(),
+    number: parsed.number,
+    skill: parsed.skill,
+    subType: parsed.subType,
+    grade: parsed.grade,
+    startZone: parsed.startZone,
+    endZone: parsed.endZone,
+    skillType: parsed.skillType,
+    players: parsed.players,
+  };
+}
+
+function normalizeEditFields(fields: typeof editingFields.value) {
+  return {
+    team: fields.team.trim().toLowerCase().slice(0, 1),
+    number: fields.number.replace(/\D/g, "").slice(0, 2),
+    skill: fields.skill.trim().toUpperCase().slice(0, 1),
+    subType: fields.subType.trim().toUpperCase().slice(0, 1),
+    grade: fields.grade.trim().slice(0, 1),
+    startZone: fields.startZone.replace(/\D/g, "").slice(0, 1),
+    endZone: fields.endZone.replace(/\D/g, "").slice(0, 1),
+    skillType: fields.skillType.trim().toUpperCase().slice(0, 1),
+    players: fields.players.replace(/\D/g, "").slice(0, 1),
+  };
+}
+
+function shouldShowAttackFields(fields: ReturnType<typeof codeToEditFields>) {
+  return fields.skill.toUpperCase() === "A";
+}
+
+function applyCodeEditFields(code: string) {
+  const fields = normalizeEditFields(editingFields.value);
+  const chars = [...code];
+  if (fields.team && chars.length > 0) chars[0] = fields.team;
+  if (fields.number.length === 2 && chars.length > 2) {
+    chars[1] = fields.number[0];
+    chars[2] = fields.number[1];
+  }
+  if (fields.skill && chars.length > 3) chars[3] = fields.skill;
+
+  const gradeIndex = chars.findIndex(
+    (char, index) => index >= 4 && isGradeChar(char),
+  );
+  if (fields.grade && gradeIndex >= 0) chars[gradeIndex] = fields.grade;
+  if (fields.subType && chars.length > 4) {
+    const subIndex = gradeIndex === 4 ? 5 : 4;
+    if (subIndex < chars.length && /[A-Za-z]/.test(chars[subIndex] ?? "")) {
+      chars[subIndex] = fields.subType;
+    }
+  }
+
+  const tailIndex = chars.lastIndexOf("~");
+  if (tailIndex >= 0) {
+    if (fields.startZone && tailIndex + 1 < chars.length)
+      chars[tailIndex + 1] = fields.startZone;
+    if (fields.endZone && tailIndex + 2 < chars.length)
+      chars[tailIndex + 2] = fields.endZone;
+    if (fields.skillType && tailIndex + 3 < chars.length)
+      chars[tailIndex + 3] = fields.skillType;
+    if (fields.players && tailIndex + 5 < chars.length)
+      chars[tailIndex + 5] = fields.players;
+  }
+  if (fields.skillType && chars.length > 12) chars[12] = fields.skillType;
+  if (fields.players && chars.length > 13) chars[13] = fields.players;
+  return chars.join("");
 }
 
 function isGradeChar(value: string): boolean {
@@ -210,7 +349,9 @@ function isActionRow(row: ScoutPlayRow): boolean {
   return !!parsed.team && !!parsed.number && !!parsed.skill;
 }
 
-function filterHasFields(filter: NonNullable<typeof props.codeFilters>[number]): boolean {
+function filterHasFields(
+  filter: NonNullable<typeof props.codeFilters>[number],
+): boolean {
   return [
     filter.team,
     filter.number,
@@ -263,7 +404,9 @@ const filteredRows = computed(() => {
   });
 });
 
-const visibleRows = computed(() => filteredRows.value.slice(0, MAX_VISIBLE_ROWS));
+const visibleRows = computed(() =>
+  filteredRows.value.slice(0, MAX_VISIBLE_ROWS),
+);
 const resultLimitStatus = computed(() => {
   if (filteredRows.value.length <= MAX_VISIBLE_ROWS) return "";
   return `Showing first ${MAX_VISIBLE_ROWS} of ${filteredRows.value.length} matching plays. Refine filters to narrow results.`;
@@ -318,15 +461,15 @@ const activeIndex = computed(() =>
 );
 
 onMounted(() => {
-  loadAutoSelectSetting();
-  window.addEventListener("storage", loadAutoSelectSetting);
-  window.addEventListener("vbdb-settings-changed", loadAutoSelectSetting);
+  loadSettings();
+  window.addEventListener("storage", loadSettings);
+  window.addEventListener("vbdb-settings-changed", loadSettings);
 });
 
 onBeforeUnmount(() => {
   if (loadDebounceTimer) clearTimeout(loadDebounceTimer);
-  window.removeEventListener("storage", loadAutoSelectSetting);
-  window.removeEventListener("vbdb-settings-changed", loadAutoSelectSetting);
+  window.removeEventListener("storage", loadSettings);
+  window.removeEventListener("vbdb-settings-changed", loadSettings);
 });
 
 watch(() => props.matchIds, scheduleLoadLines, { immediate: true, deep: true });
@@ -363,6 +506,14 @@ watch(
   },
   { immediate: true },
 );
+watch([editStatus, dirtyCodes], () => emitEditStatus(), { deep: true });
+
+function emitEditStatus() {
+  emit("editStatusChange", {
+    status: editStatus.value,
+    dirtyCount: dirtyCodes.value.size,
+  });
+}
 
 function scheduleLoadLines() {
   if (loadDebounceTimer) clearTimeout(loadDebounceTimer);
@@ -377,8 +528,40 @@ function loadAutoSelectSetting() {
     localStorage.getItem("autoSelectFilteredPlays") === "true";
 }
 
+function loadCodeEditSetting() {
+  codeEditSaveMode.value =
+    localStorage.getItem("codeEditSaveMode") === "end_of_editing"
+      ? "end_of_editing"
+      : "after_edit";
+}
+
+function loadColumnSettings() {
+  const stored = localStorage.getItem("scoutVisibleColumns");
+  if (!stored) {
+    visibleColumns.value = { videoTime: true, set: true, score: true };
+    return;
+  }
+  try {
+    const parsed = JSON.parse(stored) as Partial<typeof visibleColumns.value>;
+    visibleColumns.value = {
+      videoTime: parsed.videoTime !== false,
+      set: parsed.set !== false,
+      score: parsed.score !== false,
+    };
+  } catch {
+    visibleColumns.value = { videoTime: true, set: true, score: true };
+  }
+}
+
+function loadSettings() {
+  loadAutoSelectSetting();
+  loadCodeEditSetting();
+  loadColumnSettings();
+}
+
 async function loadLines() {
   const requestToken = ++loadRequestToken;
+  await promptSavePendingEdits();
   loading.value = true;
   loadingStatus.value = "";
   error.value = "";
@@ -392,6 +575,7 @@ async function loadLines() {
   missingVideoMatchIds.clear();
   loadingVideoMatchId.value = null;
   selectedRowIds.value = new Set();
+  editingKey.value = null;
 
   if (props.matchIds.length === 0) {
     loading.value = false;
@@ -434,7 +618,8 @@ async function loadLines() {
         if (firstMatchId != null) {
           await ensureVideoLoaded(firstMatchId);
         }
-        const firstSrc = firstMatchId != null ? videoPaths.value.get(firstMatchId) : "";
+        const firstSrc =
+          firstMatchId != null ? videoPaths.value.get(firstMatchId) : "";
         if (firstMatchId != null && firstSrc) {
           currentMatchId.value = firstMatchId;
           emit("videoSource", {
@@ -456,17 +641,20 @@ async function loadLines() {
       loadingStatus.value = `Loading files 0/${total}...`;
       if (canUseBackendBaseFilter.value) {
         loadingStatus.value = `Preparing cached scout rows for ${total} files...`;
-        rows.value = await getScoutRowsMultiFiltered(props.matchIds, props.codeFilters ?? []);
+        rows.value = await getScoutRowsMultiFiltered(
+          props.matchIds,
+          props.codeFilters ?? [],
+        );
         loaded = total;
         loadingStatus.value = `Loading files ${loaded}/${total}...`;
       } else {
         for (let i = 0; i < total; i += LOAD_CHUNK_SIZE) {
-        const chunkIds = props.matchIds.slice(i, i + LOAD_CHUNK_SIZE);
-        const chunkRows = await getScoutRowsMulti(chunkIds);
-        if (requestToken !== loadRequestToken) return;
-        allRows.push(...chunkRows);
-        loaded += chunkIds.length;
-        loadingStatus.value = `Loading files ${loaded}/${total}...`;
+          const chunkIds = props.matchIds.slice(i, i + LOAD_CHUNK_SIZE);
+          const chunkRows = await getScoutRowsMulti(chunkIds);
+          if (requestToken !== loadRequestToken) return;
+          allRows.push(...chunkRows);
+          loaded += chunkIds.length;
+          loadingStatus.value = `Loading files ${loaded}/${total}...`;
         }
         rows.value = allRows;
       }
@@ -495,6 +683,164 @@ async function loadLines() {
       if (!error.value) loadingStatus.value = "";
     }
   }
+}
+
+function startEditActive() {
+  if (visibleRows.value.length === 0) return;
+  const row = visibleRows.value[activeIndex.value >= 0 ? activeIndex.value : 0];
+  if (!row) return;
+  continuousEditMode.value = true;
+  startEditRow(row);
+}
+
+function startEditRow(row: ScoutPlayRow) {
+  activeRowId.value = row.row_id;
+  activeRowMatchId.value = row.match_id ?? null;
+  editActiveIndex.value = activeIndex.value >= 0 ? activeIndex.value : 0;
+  editingKey.value = rowEditKey(row);
+  editingFields.value = codeToEditFields(row.code);
+  originalEditingFields.value = { ...editingFields.value };
+  nextTick(() => {
+    const input =
+      tableScrollEl.value?.querySelector<HTMLInputElement>(
+        `input[data-edit-key="${editingKey.value}"][data-edit-field="${lastEditField.value}"]`,
+      ) ??
+      tableScrollEl.value?.querySelector<HTMLInputElement>(
+        `input[data-edit-key="${editingKey.value}"]`,
+      );
+    input?.focus();
+    input?.select();
+  });
+}
+
+function onEditFieldFocus(field: string) {
+  lastEditField.value = field;
+}
+
+function cancelEdit(row?: ScoutPlayRow) {
+  suppressNextBlurCommit = true;
+  continuousEditMode.value = false;
+  editingKey.value = null;
+  if (row) {
+    activeRowId.value = row.row_id;
+    activeRowMatchId.value = row.match_id ?? null;
+  }
+  editActiveIndex.value = null;
+}
+
+async function restoreEditNavigation(row: ScoutPlayRow) {
+  await nextTick();
+  if (activeIndex.value >= 0) {
+    editActiveIndex.value = null;
+    return;
+  }
+  const fallbackIndex = Math.min(
+    editActiveIndex.value ?? 0,
+    Math.max(visibleRows.value.length - 1, 0),
+  );
+  const fallback = visibleRows.value[fallbackIndex];
+  activeRowId.value = fallback?.row_id ?? row.row_id;
+  activeRowMatchId.value = fallback
+    ? (fallback.match_id ?? null)
+    : (row.match_id ?? null);
+  editActiveIndex.value = null;
+}
+
+async function commitEdit(row: ScoutPlayRow) {
+  if (suppressNextBlurCommit) {
+    suppressNextBlurCommit = false;
+    return;
+  }
+  const matchId = rowMatchId(row);
+  if (matchId == null) return;
+  if (
+    JSON.stringify(normalizeEditFields(editingFields.value)) ===
+    JSON.stringify(normalizeEditFields(originalEditingFields.value))
+  ) {
+    editingKey.value = null;
+    return;
+  }
+  const nextCode = applyCodeEditFields(row.code);
+  editingKey.value = null;
+  if (nextCode === row.code) return;
+
+  row.code = nextCode;
+  activeRowId.value = row.row_id;
+  activeRowMatchId.value = row.match_id ?? null;
+  emitSelectedClips();
+  void restoreEditNavigation(row);
+  if (codeEditSaveMode.value === "end_of_editing") {
+    const next = new Map(dirtyCodes.value);
+    next.set(rowEditKey(row), {
+      match_id: matchId,
+      row_id: row.row_id,
+      code: nextCode,
+    });
+    dirtyCodes.value = next;
+    editStatus.value = `${next.size} unsaved code edit${next.size === 1 ? "" : "s"}`;
+    return;
+  }
+
+  editStatus.value = "Saving code...";
+  try {
+    await updateScoutCodes([
+      { match_id: matchId, row_id: row.row_id, code: nextCode },
+    ]);
+    editStatus.value = "Code saved";
+  } catch (e) {
+    editStatus.value = e instanceof Error ? e.message : String(e);
+  }
+}
+
+async function commitCurrentEdit() {
+  if (!editingKey.value) return;
+  const row = visibleRows.value.find(
+    (item) => rowEditKey(item) === editingKey.value,
+  );
+  if (row) await commitEdit(row);
+}
+
+function onEditEscape(row: ScoutPlayRow) {
+  cancelEdit(row);
+  requestAnimationFrame(() => {
+    const activeRow = tableScrollEl.value?.querySelector<HTMLTableRowElement>(
+      `tr[data-match-id="${row.match_id ?? ""}"][data-row-id="${row.row_id}"]`,
+    );
+    activeRow?.scrollIntoView({ block: "nearest" });
+  });
+}
+
+function onEditFocusout(row: ScoutPlayRow, event: FocusEvent) {
+  const nextTarget = event.relatedTarget;
+  if (
+    nextTarget instanceof Node &&
+    event.currentTarget instanceof HTMLElement
+  ) {
+    if (event.currentTarget.contains(nextTarget)) return;
+  }
+  void commitEdit(row);
+}
+
+async function savePendingEdits() {
+  const changes = [...dirtyCodes.value.values()];
+  if (changes.length === 0) return;
+  editStatus.value = "Saving code edits...";
+  await updateScoutCodes(changes);
+  dirtyCodes.value = new Map();
+  editStatus.value = "Code edits saved";
+}
+
+function discardPendingEdits() {
+  dirtyCodes.value = new Map();
+  editStatus.value = "Code edits discarded";
+  void loadLines();
+}
+
+async function promptSavePendingEdits() {
+  if (dirtyCodes.value.size === 0) return;
+  const shouldSave = window.confirm("Save code edits to stored scout file?");
+  if (shouldSave) await savePendingEdits();
+  else dirtyCodes.value = new Map();
 }
 
 function toVideoSrc(path: string): string {
@@ -612,8 +958,11 @@ async function seekToRow(row: ScoutPlayRow) {
   applySeek();
 }
 
-function moveSelection(next: boolean) {
+async function moveSelection(next: boolean) {
   if (visibleRows.value.length === 0) return;
+  const shouldContinueEditing =
+    continuousEditMode.value && editingKey.value != null;
+  if (shouldContinueEditing) await commitCurrentEdit();
   const index = activeIndex.value;
   const targetIndex = next
     ? index < visibleRows.value.length - 1
@@ -622,7 +971,15 @@ function moveSelection(next: boolean) {
     : index > 0
       ? index - 1
       : visibleRows.value.length - 1;
-  seekToRow(visibleRows.value[targetIndex]);
+  const target = visibleRows.value[targetIndex];
+  await seekToRow(target);
+  if (shouldContinueEditing) startEditRow(target);
+}
+
+async function onRowClick(row: ScoutPlayRow) {
+  if (continuousEditMode.value && editingKey.value) await commitCurrentEdit();
+  await seekToRow(row);
+  if (continuousEditMode.value) startEditRow(row);
 }
 
 function onTableKeydown(e: KeyboardEvent) {
@@ -630,13 +987,13 @@ function onTableKeydown(e: KeyboardEvent) {
 
   if (matchesHotkey(e, hotkeys.value.nextPlay)) {
     e.preventDefault();
-    moveSelection(true);
+    void moveSelection(true);
     return;
   }
 
   if (matchesHotkey(e, hotkeys.value.previousPlay)) {
     e.preventDefault();
-    moveSelection(false);
+    void moveSelection(false);
     return;
   }
 
@@ -651,6 +1008,12 @@ function onTableKeydown(e: KeyboardEvent) {
   if (matchesHotkey(e, hotkeys.value.togglePlaySelection)) {
     e.preventDefault();
     toggleActiveRowSelection();
+    return;
+  }
+
+  if (e.ctrlKey && e.key.toLowerCase() === "e") {
+    e.preventDefault();
+    startEditActive();
     return;
   }
 
@@ -697,6 +1060,20 @@ function selectAllVisibleRows() {
 function clearAllVisibleRows() {
   selectedRowIds.value = new Set();
   emitSelectedClips();
+}
+
+function areAllVisibleRowsSelected(): boolean {
+  return (
+    visibleRows.value.length > 0 &&
+    visibleRows.value.every((row) =>
+      selectedRowIds.value.has(rowSelectionKey(row)),
+    )
+  );
+}
+
+function toggleAllVisibleRows() {
+  if (areAllVisibleRowsSelected()) clearAllVisibleRows();
+  else selectAllVisibleRows();
 }
 
 function getRowVideoPath(row: ScoutPlayRow): string {
@@ -786,6 +1163,12 @@ defineExpose({
   toggleActiveSelection() {
     toggleActiveRowSelection();
   },
+  startEditActive,
+  savePendingEdits,
+  discardPendingEdits,
+  isEditingCode() {
+    return continuousEditMode.value || editingKey.value != null;
+  },
 });
 </script>
 
@@ -809,37 +1192,40 @@ defineExpose({
       <p v-else-if="resultLimitStatus" class="muted padded">
         {{ resultLimitStatus }}
       </p>
+      <div v-if="editStatus && dirtyCodes.size === 0" class="edit-status padded">
+        <span>{{ editStatus }}</span>
+      </div>
       <div class="table-wrap">
         <div ref="tableScrollEl" class="table-scroll">
           <table class="scout-table">
             <colgroup>
               <col class="col-use" />
               <col v-if="matchIds.length > 1" class="col-match" />
-              <col class="col-time" />
-              <col class="col-set" />
+              <col v-if="visibleColumns.videoTime" class="col-time" />
+              <col v-if="visibleColumns.set" class="col-set" />
               <col class="col-code" />
-              <col class="col-score" />
+              <col v-if="visibleColumns.score" class="col-score" />
             </colgroup>
             <thead>
               <tr>
                 <th>
                   <button
                     class="use-clear-btn"
-                    title="Clear all selected plays"
-                    @click="clearAllVisibleRows"
+                    title="Select or clear all visible plays"
+                    @click="toggleAllVisibleRows"
                   >
                     Use
                   </button>
                 </th>
                 <th v-if="matchIds.length > 1">Match</th>
-                <th>
+                <th v-if="visibleColumns.videoTime">
                   Video time {{ filteredRows.length }}
                   /
                   {{ rows.length }}
                 </th>
-                <th>Set</th>
+                <th v-if="visibleColumns.set">Set</th>
                 <th>Code</th>
-                <th>Score</th>
+                <th v-if="visibleColumns.score">Score</th>
               </tr>
             </thead>
             <tbody>
@@ -853,7 +1239,7 @@ defineExpose({
                     activeRowId === row.row_id &&
                     (row.match_id ?? null) === activeRowMatchId,
                 }"
-                @click="seekToRow(row)"
+                @click="onRowClick(row)"
               >
                 <td class="use-cell">
                   <input
@@ -866,10 +1252,131 @@ defineExpose({
                 <td v-if="matchIds.length > 1" class="match-label">
                   {{ row.match_name ?? "-" }}
                 </td>
-                <td>{{ formatVideoTime(row) }}</td>
-                <td>{{ row.set_number ?? "-" }}</td>
-                <td class="code">{{ row.code || "-" }}</td>
-                <td>{{ row.score ?? "-" }}</td>
+                <td v-if="visibleColumns.videoTime">
+                  {{ formatVideoTime(row) }}
+                </td>
+                <td v-if="visibleColumns.set">{{ row.set_number ?? "-" }}</td>
+                <td class="code">
+                  <div
+                    v-if="editingKey === rowEditKey(row)"
+                    class="code-edit-grid"
+                    @click.stop
+                    @keydown.enter.prevent.stop="commitEdit(row)"
+                    @keydown.escape.prevent="onEditEscape(row)"
+                    @focusout="onEditFocusout(row, $event)"
+                  >
+                    <input
+                      v-model="editingFields.team"
+                      class="code-edit-input tiny team"
+                      :data-edit-key="rowEditKey(row)"
+                      data-edit-field="team"
+                      title="Team"
+                      @focus="onEditFieldFocus('team')"
+                    />
+                    <input
+                      v-model="editingFields.number"
+                      class="code-edit-input number"
+                      :data-edit-key="rowEditKey(row)"
+                      data-edit-field="number"
+                      title="Number"
+                      @focus="onEditFieldFocus('number')"
+                    />
+                    <input
+                      v-model="editingFields.skill"
+                      class="code-edit-input tiny"
+                      :data-edit-key="rowEditKey(row)"
+                      data-edit-field="skill"
+                      title="Skill"
+                      @focus="onEditFieldFocus('skill')"
+                    />
+                    <input
+                      v-model="editingFields.subType"
+                      class="code-edit-input tiny"
+                      :data-edit-key="rowEditKey(row)"
+                      data-edit-field="subType"
+                      title="Sub"
+                      @focus="onEditFieldFocus('subType')"
+                    />
+                    <input
+                      v-model="editingFields.grade"
+                      class="code-edit-input tiny"
+                      :data-edit-key="rowEditKey(row)"
+                      data-edit-field="grade"
+                      title="Grade"
+                      @focus="onEditFieldFocus('grade')"
+                    />
+                    <input
+                      v-model="editingFields.startZone"
+                      class="code-edit-input tiny"
+                      :data-edit-key="rowEditKey(row)"
+                      data-edit-field="startZone"
+                      title="Start"
+                      @focus="onEditFieldFocus('startZone')"
+                    />
+                    <input
+                      v-model="editingFields.endZone"
+                      class="code-edit-input tiny"
+                      :data-edit-key="rowEditKey(row)"
+                      data-edit-field="endZone"
+                      title="End"
+                      @focus="onEditFieldFocus('endZone')"
+                    />
+                    <input
+                      v-if="shouldShowAttackFields(editingFields)"
+                      v-model="editingFields.skillType"
+                      class="code-edit-input tiny"
+                      :data-edit-key="rowEditKey(row)"
+                      data-edit-field="skillType"
+                      title="Type"
+                      @focus="onEditFieldFocus('skillType')"
+                    />
+                    <input
+                      v-if="shouldShowAttackFields(editingFields)"
+                      v-model="editingFields.players"
+                      class="code-edit-input tiny"
+                      :data-edit-key="rowEditKey(row)"
+                      data-edit-field="players"
+                      title="Player"
+                      @focus="onEditFieldFocus('players')"
+                    />
+                  </div>
+                  <div v-else class="code-display-grid">
+                    <span class="code-field team">{{
+                      codeToEditFields(row.code).team || "-"
+                    }}</span>
+                    <span class="code-field number">{{
+                      codeToEditFields(row.code).number || "--"
+                    }}</span>
+                    <span class="code-field">{{
+                      codeToEditFields(row.code).skill || "-"
+                    }}</span>
+                    <span class="code-field">{{
+                      codeToEditFields(row.code).subType || "-"
+                    }}</span>
+                    <span class="code-field">{{
+                      codeToEditFields(row.code).grade || "-"
+                    }}</span>
+                    <span class="code-field">{{
+                      codeToEditFields(row.code).startZone || "-"
+                    }}</span>
+                    <span class="code-field">{{
+                      codeToEditFields(row.code).endZone || "-"
+                    }}</span>
+                    <span
+                      v-if="shouldShowAttackFields(codeToEditFields(row.code))"
+                      class="code-field"
+                    >
+                      {{ codeToEditFields(row.code).skillType || "-" }}
+                    </span>
+                    <span
+                      v-if="shouldShowAttackFields(codeToEditFields(row.code))"
+                      class="code-field"
+                    >
+                      {{ codeToEditFields(row.code).players || "-" }}
+                    </span>
+                  </div>
+                </td>
+                <td v-if="visibleColumns.score">{{ row.score ?? "-" }}</td>
               </tr>
             </tbody>
           </table>
@@ -966,8 +1473,76 @@ defineExpose({
 }
 
 .code {
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   white-space: nowrap;
+}
+
+.code-edit-grid,
+.code-display-grid {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+}
+
+.code-field {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 20px;
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  color: var(--fg);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.code-field.number {
+  min-width: 34px;
+}
+
+.code-field.team {
+  text-transform: lowercase;
+}
+
+.code-edit-input {
+  border: 1px solid var(--accent-border);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  padding: 2px 4px;
+  text-transform: uppercase;
+}
+
+.code-edit-input.tiny {
+  width: 24px;
+}
+
+.code-edit-input.number {
+  width: 34px;
+}
+
+.code-edit-input.team {
+  text-transform: lowercase;
+}
+
+.edit-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.edit-status-btn {
+  border: 1px solid var(--border-soft);
+  background: var(--surface-soft);
+  color: var(--fg);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
 }
 
 .col-time {

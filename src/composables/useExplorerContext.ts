@@ -1,6 +1,10 @@
 import { computed, ref } from "vue"
 import type { Association, Season } from "../types/database"
-import * as api from "../services/api"
+import { Effect } from "effect"
+import { makeExplorerService } from "../services/effect/ExplorerService"
+import type { TauriInvokeError } from "../services/effect/tauri"
+
+const svc = makeExplorerService()
 
 const associations = ref<Association[]>([])
 const seasons = ref<Season[]>([])
@@ -8,6 +12,7 @@ const selectedAssociationId = ref<number | null>(null)
 const selectedSeasonIds = ref<number[]>([])
 const selectedTeamNames = ref<string[]>([])
 const initialized = ref(false)
+
 const STORAGE_ASSOCIATION_KEY = "explorer:selectedAssociationId"
 const STORAGE_SEASONS_KEY = "explorer:selectedSeasonIds"
 
@@ -41,93 +46,62 @@ function persistSelection() {
   localStorage.setItem(STORAGE_SEASONS_KEY, JSON.stringify(selectedSeasonIds.value))
 }
 
+function runPromise<A>(effect: Effect.Effect<A, TauriInvokeError>): Promise<A> {
+  return Effect.runPromise(effect)
+}
+
 const selectedAssociation = computed(() =>
-  associations.value.find((association) => association.id === selectedAssociationId.value) ?? null,
+  associations.value.find((a) => a.id === selectedAssociationId.value) ?? null,
 )
 
 const selectedSeasons = computed(() =>
-  seasons.value.filter((season) => selectedSeasonIds.value.includes(season.id)),
+  seasons.value.filter((s) => selectedSeasonIds.value.includes(s.id)),
 )
-
-async function reloadAssociations() {
-  associations.value = await api.getAssociations()
-}
-
-async function reloadSeasons() {
-  const chunks = await Promise.all(
-    associations.value.map(async (association) => ({
-      associationId: association.id,
-      rows: await api.getSeasons(association.id),
-    })),
-  )
-  seasons.value = chunks.flatMap((chunk) => chunk.rows.map((row) => ({ ...row, association_id: chunk.associationId })))
-}
-
-async function ensureDefaultAssociation() {
-  const existing = associations.value[0]
-  if (existing) return existing
-  return api.createAssociation("VBDB")
-}
-
-async function ensureUntitledSeason(associationId: number) {
-  const existing = seasons.value.find((season) => season.association_id === associationId)
-  if (existing) return existing
-  const season = await api.createSeason(associationId, "Untitled season")
-  seasons.value.push(season)
-  return season
-}
 
 async function initExplorerContext() {
   if (initialized.value) return
-
-  await reloadAssociations()
-  const defaultAssociation = await ensureDefaultAssociation()
-  await reloadAssociations()
-  await reloadSeasons()
-
-  const storedAssociationId = loadStoredAssociationId()
-  const storedSeasonIds = loadStoredSeasonIds()
-  const hasStoredAssociation =
-    storedAssociationId !== null &&
-    associations.value.some((association) => association.id === storedAssociationId)
-
-  if (hasStoredAssociation) selectedAssociationId.value = storedAssociationId
-
-  if (!selectedAssociationId.value) selectedAssociationId.value = defaultAssociation.id
-
-  if (selectedAssociationId.value) {
-    const season = await ensureUntitledSeason(selectedAssociationId.value)
-    const validSeasonIds = seasons.value
-      .filter((row) => row.association_id === selectedAssociationId.value)
-      .map((row) => row.id)
-
-    const restored = storedSeasonIds.filter((seasonId) => validSeasonIds.includes(seasonId))
-    selectedSeasonIds.value = restored.length > 0 ? restored : [season.id]
-  }
-
+  const result = await runPromise(
+    svc.init(loadStoredAssociationId(), loadStoredSeasonIds()),
+  )
+  associations.value = result.associations
+  seasons.value = result.seasons
+  selectedAssociationId.value = result.selectedAssociationId
+  selectedSeasonIds.value = result.selectedSeasonIds
   persistSelection()
+  initialized.value = result.initialized
+}
 
-  initialized.value = true
+async function reloadAssociations() {
+  associations.value = await runPromise(svc.reloadAssociations())
+}
+
+async function reloadSeasons() {
+  seasons.value = await runPromise(svc.reloadSeasons(associations.value))
 }
 
 async function setSelectedAssociation(id: number) {
-  selectedAssociationId.value = id
-  const season = await ensureUntitledSeason(id)
-
-  const validSeasonIds = seasons.value
-    .filter((row) => row.association_id === id)
-    .map((season) => season.id)
-  const preserved = selectedSeasonIds.value.filter((seasonId) => validSeasonIds.includes(seasonId))
-  selectedSeasonIds.value = preserved.length > 0 ? preserved : [season.id]
+  const result = await runPromise(
+    svc.selectAssociation(
+      {
+        associations: associations.value,
+        seasons: seasons.value,
+        selectedAssociationId: selectedAssociationId.value,
+        selectedSeasonIds: selectedSeasonIds.value,
+      },
+      id,
+    ),
+  )
+  seasons.value = result.seasons
+  selectedAssociationId.value = result.selectedAssociationId
+  selectedSeasonIds.value = result.selectedSeasonIds
   persistSelection()
 }
 
 function setSelectedSeasons(ids: number[]) {
   if (!selectedAssociationId.value) return
-
   const validSeasonIds = seasons.value
-    .filter((season) => season.association_id === selectedAssociationId.value)
-    .map((season) => season.id)
+    .filter((s) => s.association_id === selectedAssociationId.value)
+    .map((s) => s.id)
   selectedSeasonIds.value = ids.filter((id) => validSeasonIds.includes(id))
   persistSelection()
 }
@@ -147,13 +121,26 @@ function toggleTeamName(name: string, checked: boolean) {
 }
 
 async function refreshAfterImport() {
-  await reloadSeasons()
-  if (!selectedAssociationId.value) return
-  const visibleIds = seasons.value
-    .filter((season) => season.association_id === selectedAssociationId.value)
-    .map((season) => season.id)
-  selectedSeasonIds.value = visibleIds
+  const result = await runPromise(
+    svc.refreshAfterImport({
+      associations: associations.value,
+      seasons: seasons.value,
+      selectedAssociationId: selectedAssociationId.value,
+      selectedSeasonIds: selectedSeasonIds.value,
+    }),
+  )
+  seasons.value = result.seasons
+  selectedSeasonIds.value = result.selectedSeasonIds
   persistSelection()
+}
+
+async function ensureUntitledSeason(associationId: number) {
+  const existing = seasons.value.find((s) => s.association_id === associationId)
+  if (existing) return existing
+  const { createSeason } = await import("../services/api")
+  const season = await createSeason(associationId, "Untitled season")
+  seasons.value.push(season)
+  return season
 }
 
 export function useExplorerContext() {

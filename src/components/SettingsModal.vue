@@ -16,11 +16,15 @@ const muteOnAutoplayStart = ref(false);
 const explorerListStyle = ref<"file" | "card">("file");
 const autoSelectFilteredPlays = ref(false);
 const showPrependingDate = ref(false);
+const codeEditSaveMode = ref<"after_edit" | "end_of_editing">("after_edit");
+const storedScoutFilesPath = ref("");
+const scoutVisibleColumns = ref({ videoTime: true, set: true, score: true });
 
 const settingsTabs = ["general", "settings", "theme", "hotkeys"] as const;
 
 onMounted(async () => {
   await loadAutoSeasonSetting();
+  await loadStoredScoutFilesPath();
   const stored = localStorage.getItem("autoPlayOnSeek");
   autoPlayOnSeek.value = stored !== null ? stored === "true" : true;
   const autoAdvanceStored = localStorage.getItem("autoAdvanceMontage");
@@ -39,7 +43,29 @@ onMounted(async () => {
     localStorage.getItem("autoSelectFilteredPlays") === "true";
   showPrependingDate.value =
     localStorage.getItem("showPrependingDate") === "true";
+  codeEditSaveMode.value =
+    localStorage.getItem("codeEditSaveMode") === "end_of_editing"
+      ? "end_of_editing"
+      : "after_edit";
+  loadScoutVisibleColumns();
 });
+
+function loadScoutVisibleColumns() {
+  const stored = localStorage.getItem("scoutVisibleColumns");
+  if (!stored) return;
+  try {
+    const parsed = JSON.parse(stored) as Partial<
+      typeof scoutVisibleColumns.value
+    >;
+    scoutVisibleColumns.value = {
+      videoTime: parsed.videoTime !== false,
+      set: parsed.set !== false,
+      score: parsed.score !== false,
+    };
+  } catch {
+    scoutVisibleColumns.value = { videoTime: true, set: true, score: true };
+  }
+}
 
 async function loadAutoSeasonSetting() {
   try {
@@ -52,6 +78,14 @@ async function loadAutoSeasonSetting() {
         autoSeason.value = true;
       }
     }, 300);
+  }
+}
+
+async function loadStoredScoutFilesPath() {
+  try {
+    storedScoutFilesPath.value = await api.getStoredScoutFilesPath();
+  } catch {
+    storedScoutFilesPath.value = "Unavailable until app data is initialized";
   }
 }
 
@@ -107,6 +141,30 @@ function onShowPrependingDateToggle(value: boolean) {
   showPrependingDate.value = value;
   localStorage.setItem("showPrependingDate", String(value));
   window.dispatchEvent(new Event("vbdb-settings-changed"));
+}
+
+function onCodeEditSaveModeChange(value: string) {
+  const safe = value === "end_of_editing" ? "end_of_editing" : "after_edit";
+  codeEditSaveMode.value = safe;
+  localStorage.setItem("codeEditSaveMode", safe);
+  window.dispatchEvent(new Event("vbdb-settings-changed"));
+}
+
+function onScoutColumnToggle(
+  column: keyof typeof scoutVisibleColumns.value,
+  value: boolean,
+) {
+  scoutVisibleColumns.value = { ...scoutVisibleColumns.value, [column]: value };
+  localStorage.setItem(
+    "scoutVisibleColumns",
+    JSON.stringify(scoutVisibleColumns.value),
+  );
+  window.dispatchEvent(new Event("vbdb-settings-changed"));
+}
+
+async function copyStoredScoutFilesPath() {
+  if (!storedScoutFilesPath.value) return;
+  await navigator.clipboard.writeText(storedScoutFilesPath.value);
 }
 
 function onOverlayClick(e: MouseEvent) {
@@ -208,6 +266,21 @@ watch(open, async (isOpen) => {
                   </div>
                   <p class="setting-value">0.1</p>
                 </div>
+                <div class="setting-row">
+                  <div class="setting-copy">
+                    <p class="setting-title">Stored scout files</p>
+                    <p class="setting-description">
+                      Imported .dvw copies edited by code changes.
+                    </p>
+                    <p class="path-value">{{ storedScoutFilesPath }}</p>
+                  </div>
+                  <button
+                    class="secondary-btn"
+                    @click="copyStoredScoutFilesPath"
+                  >
+                    Copy path
+                  </button>
+                </div>
               </div>
             </section>
             <section v-if="activeTab === 'settings'" class="settings-section">
@@ -258,7 +331,9 @@ watch(open, async (isOpen) => {
                 </div>
                 <div class="setting-row">
                   <div class="setting-copy">
-                    <p class="setting-title">Auto select all plays when filtering</p>
+                    <p class="setting-title">
+                      Auto select all plays when filtering
+                    </p>
                     <p class="setting-description">
                       Automatically check every visible play in the code window
                       after filters are applied.
@@ -276,6 +351,80 @@ watch(open, async (isOpen) => {
                     />
                     <span class="toggle-slider"></span>
                   </label>
+                </div>
+                <div class="setting-row">
+                  <div class="setting-copy">
+                    <p class="setting-title">Code edit saving</p>
+                    <p class="setting-description">
+                      Save code edits immediately or keep them pending until you
+                      choose to save.
+                    </p>
+                  </div>
+                  <select
+                    class="select-input"
+                    :value="codeEditSaveMode"
+                    @change="
+                      onCodeEditSaveModeChange(
+                        ($event.target as HTMLSelectElement).value,
+                      )
+                    "
+                  >
+                    <option value="after_edit">Save after editing code</option>
+                    <option value="end_of_editing">
+                      Save at end of editing
+                    </option>
+                  </select>
+                </div>
+                <div class="setting-row">
+                  <div class="setting-copy">
+                    <p class="setting-title">Columns shown</p>
+                    <p class="setting-description">
+                      Hide optional columns in the scout table. Code always
+                      stays visible.
+                    </p>
+                  </div>
+                  <details class="checkbox-dropdown">
+                    <summary>Choose columns</summary>
+                    <label>
+                      <input
+                        type="checkbox"
+                        :checked="scoutVisibleColumns.videoTime"
+                        @change="
+                          onScoutColumnToggle(
+                            'videoTime',
+                            ($event.target as HTMLInputElement).checked,
+                          )
+                        "
+                      />
+                      Video time
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        :checked="scoutVisibleColumns.set"
+                        @change="
+                          onScoutColumnToggle(
+                            'set',
+                            ($event.target as HTMLInputElement).checked,
+                          )
+                        "
+                      />
+                      Set
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        :checked="scoutVisibleColumns.score"
+                        @change="
+                          onScoutColumnToggle(
+                            'score',
+                            ($event.target as HTMLInputElement).checked,
+                          )
+                        "
+                      />
+                      Score
+                    </label>
+                  </details>
                 </div>
                 <div class="setting-row">
                   <div class="setting-copy">
@@ -430,6 +579,7 @@ watch(open, async (isOpen) => {
 }
 
 .dialog {
+  position: relative;
   overflow: hidden;
   background: color-mix(in srgb, var(--bg) 92%, #111);
   border: 1px solid var(--border-soft);
@@ -616,6 +766,63 @@ watch(open, async (isOpen) => {
   white-space: nowrap;
 }
 
+.path-value {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.secondary-btn {
+  border: 1px solid var(--border-soft);
+  background: var(--surface-soft);
+  color: var(--fg);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.checkbox-dropdown {
+  position: relative;
+  min-width: 180px;
+}
+
+.checkbox-dropdown summary {
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  color: var(--fg);
+  font-size: 13px;
+  padding: 6px 8px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.checkbox-dropdown[open] summary {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.checkbox-dropdown label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface);
+  border-left: 1px solid var(--border-soft);
+  border-right: 1px solid var(--border-soft);
+  padding: 8px;
+  font-size: 12px;
+}
+
+.checkbox-dropdown label:last-child {
+  border-bottom: 1px solid var(--border-soft);
+  border-bottom-left-radius: 8px;
+  border-bottom-right-radius: 8px;
+}
+
 .number-input,
 .select-input {
   width: 88px;
@@ -628,7 +835,7 @@ watch(open, async (isOpen) => {
 }
 
 .select-input {
-  width: 120px;
+  width: 180px;
 }
 
 .toggle {

@@ -62,6 +62,12 @@ const filteredTeams = computed(() => {
   return teams.value.filter((team) => team.toLowerCase().includes(q));
 });
 
+const activeAssociation = computed(() =>
+  associations.value.find((a) => a.id === selectedAssociationId.value),
+);
+
+const selectedCount = computed(() => selectedSeasonIds.value.length);
+
 async function onScoutFilesImported() {
   await reloadSeasons();
   if (selectedSeasonIds.value.length > 0) {
@@ -78,13 +84,17 @@ onBeforeUnmount(() => {
   window.removeEventListener("scout-files-imported", onScoutFilesImported);
 });
 
-watch(selectedSeasonIds, async (ids) => {
-  if (ids.length === 0) {
-    teams.value = [];
-    return;
-  }
-  teams.value = await api.getTeamsForSeasons(ids);
-}, { immediate: true });
+watch(
+  selectedSeasonIds,
+  async (ids) => {
+    if (ids.length === 0) {
+      teams.value = [];
+      return;
+    }
+    teams.value = await api.getTeamsForSeasons(ids);
+  },
+  { immediate: true },
+);
 
 function openDialog(
   action: typeof dialogAction.value,
@@ -124,8 +134,8 @@ async function submitDialog(value: string) {
 }
 
 async function chooseAssociation(id: number) {
-  setSelectedTeamNames([])
-  await setSelectedAssociation(id)
+  setSelectedTeamNames([]);
+  await setSelectedAssociation(id);
 }
 
 function toggleSeason(id: number, checked: boolean) {
@@ -282,7 +292,9 @@ async function uploadScoutFiles() {
       parts.push(`Imported ${result.imported.length} file(s)`);
     }
     if (result.failed.length > 0) {
-      parts.push(`${result.failed.length} file(s) skipped (${result.failed[0].reason})`);
+      parts.push(
+        `${result.failed.length} file(s) skipped (${result.failed[0].reason})`,
+      );
     }
     uploadSuccess.value = parts.join(". ");
     refreshAfterImport();
@@ -303,25 +315,55 @@ async function uploadScoutFiles() {
       :allow-multi-select="false"
       @open-match="openMatch"
     />
-    <div class="home-wrap">
-      <div class="home-top-actions">
-        <div></div>
-        <button class="upload-btn" :disabled="uploading" @click="uploadScoutFiles">
-          {{ uploading ? "Importing..." : "Upload scout files" }}
+    <div class="workspace">
+      <header class="workspace-header">
+        <div class="header-left">
+          <div class="header-titles">
+            <p class="page-sub">
+              <template v-if="activeAssociation">{{
+                activeAssociation.name
+              }}</template>
+              <template v-else>Select an association to begin</template>
+              <span v-if="selectedCount > 0" class="count-badge"
+                >{{ selectedCount }} season{{
+                  selectedCount > 1 ? "s" : ""
+                }}</span
+              >
+            </p>
+          </div>
+        </div>
+        <button
+          class="import-cta"
+          :disabled="uploading"
+          @click="uploadScoutFiles"
+        >
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M8 10V2m0 0L5 5m3-3 3 3" />
+            <path d="M2 10v2a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2v-2" />
+          </svg>
+          <span>{{ uploading ? "Importing\u2026" : "Import files" }}</span>
         </button>
-        <div></div>
-      </div>
-      <p v-if="uploadError" class="upload-error">{{ uploadError }}</p>
-      <p v-if="uploadSuccess" class="upload-success">{{ uploadSuccess }}</p>
-      <p class="load-note">
-        Large file selections may take a while the first time while scout rows are cached. Future loads should be faster.
-      </p>
-      <div class="selector-card">
+      </header>
+
+      <div v-if="uploadError" class="toast toast-err">{{ uploadError }}</div>
+      <div v-if="uploadSuccess" class="toast toast-ok">{{ uploadSuccess }}</div>
+
+      <div class="columns">
         <section class="col">
-          <header class="head">
-            <h2>Associations</h2>
-            <div class="actions">
+          <div class="col-label">
+            <span>Associations</span>
+            <div class="col-btns">
               <button
+                class="micro-btn"
                 @click="
                   openDialog(
                     'addAssociation',
@@ -329,79 +371,93 @@ async function uploadScoutFiles() {
                     'Association name',
                   )
                 "
+                title="Add"
               >
                 +
               </button>
               <button
-                :class="{ active: renameAssociationMode }"
+                class="micro-btn"
+                :class="{ editing: renameAssociationMode }"
                 @click="renameAssociationMode = !renameAssociationMode"
+                title="Rename"
               >
                 &#x270E;
               </button>
             </div>
-          </header>
-
-          <button
-            v-for="association in associations"
-            :key="association.id"
-            class="row row-btn"
-            :class="{ selected: selectedAssociationId === association.id }"
-            @click="onAssociationRowClick(association.id)"
-          >
-            <span class="row-left">
-              <input
-                type="radio"
-                :checked="selectedAssociationId === association.id"
-              />
-              <span>{{ association.name }}</span>
-            </span>
+          </div>
+          <div class="col-list">
             <button
-              v-if="renameAssociationMode"
-              class="delete-btn"
-              title="Delete association"
-              @click.stop="removeAssociation(association.id)"
+              v-for="association in associations"
+              :key="association.id"
+              class="list-item association-item"
+              :class="{ picked: selectedAssociationId === association.id }"
+              @click="onAssociationRowClick(association.id)"
             >
-              ×
+              <span class="association-name">{{ association.name }}</span>
+              <span class="association-meta">
+                {{
+                  seasons.filter((s) => s.association_id === association.id)
+                    .length
+                }}
+              </span>
+              <button
+                v-if="renameAssociationMode"
+                class="del-btn"
+                title="Delete"
+                @click.stop="removeAssociation(association.id)"
+              >
+                &times;
+              </button>
             </button>
-          </button>
+            <div v-if="associations.length === 0" class="empty">
+              No associations yet
+            </div>
+          </div>
         </section>
 
-        <section class="col">
-          <header class="head">
-            <h2>Seasons</h2>
-            <div class="actions">
+        <section class="col col-seasons">
+          <div class="col-label">
+            <span>Seasons</span>
+            <div class="col-btns">
               <button
+                class="micro-btn"
+                :disabled="!selectedAssociationId"
                 @click="openDialog('addSeason', 'New season', 'Season name')"
+                title="Add"
               >
                 +
               </button>
               <button
-                :class="{ active: renameSeasonMode }"
+                class="micro-btn"
+                :class="{ editing: renameSeasonMode }"
                 @click="renameSeasonMode = !renameSeasonMode"
+                title="Rename"
               >
                 &#x270E;
               </button>
             </div>
-          </header>
-
-          <label class="row select-all">
-            <input
-              type="checkbox"
-              :checked="allSeasonsSelected"
-              @change="
-                toggleAllSeasons(($event.target as HTMLInputElement).checked)
-              "
-            />
-            <span>Select all seasons</span>
-          </label>
-
-          <label
-            v-for="season in visibleSeasons"
-            :key="season.id"
-            class="row row-season"
-            @click="onSeasonRowClick(season.id)"
-          >
-            <span class="row-left">
+          </div>
+          <div class="col-list">
+            <label
+              v-if="visibleSeasons.length > 0"
+              class="list-item select-all-item"
+            >
+              <input
+                type="checkbox"
+                :checked="allSeasonsSelected"
+                @change="
+                  toggleAllSeasons(($event.target as HTMLInputElement).checked)
+                "
+              />
+              <span class="select-all-text">Select all</span>
+            </label>
+            <label
+              v-for="season in visibleSeasons"
+              :key="season.id"
+              class="list-item season-item"
+              :class="{ checked: selectedSeasonIds.includes(season.id) }"
+              @click="onSeasonRowClick(season.id)"
+            >
               <input
                 type="checkbox"
                 :checked="selectedSeasonIds.includes(season.id)"
@@ -412,55 +468,77 @@ async function uploadScoutFiles() {
                   )
                 "
               />
-              <span>{{ season.name }}</span>
-            </span>
-            <button
-              v-if="renameSeasonMode"
-              class="delete-btn"
-              title="Delete season"
-              @click.stop="removeSeason(season.id)"
+              <span class="season-name">{{ season.name }}</span>
+              <button
+                v-if="renameSeasonMode"
+                class="del-btn"
+                title="Delete"
+                @click.stop="removeSeason(season.id)"
+              >
+                &times;
+              </button>
+            </label>
+            <div
+              v-if="visibleSeasons.length === 0 && selectedAssociationId"
+              class="empty"
             >
-              ×
-            </button>
-          </label>
+              No seasons &mdash; add one or import files
+            </div>
+            <div v-if="!selectedAssociationId" class="empty">
+              Pick an association first
+            </div>
+          </div>
         </section>
 
         <section class="col col-teams">
-          <header class="head">
-            <h2>Teams</h2>
-            <div v-if="selectedTeamNames.length > 0" class="actions">
-              <button @click="setSelectedTeamNames([])" title="Clear team filter">Clear</button>
-            </div>
-          </header>
-
-          <div class="col-scroll">
+          <div class="col-label">
+            <span>Teams</span>
+            <button
+              v-if="selectedTeamNames.length > 0"
+              class="micro-btn"
+              @click="setSelectedTeamNames([])"
+              title="Clear"
+            >
+              Clear
+            </button>
+          </div>
+          <div class="col-list">
             <input
-              v-if="teams.length > 8"
-              class="team-search"
+              v-if="teams.length > 6"
+              class="filter-input"
               type="text"
-              placeholder="Search teams..."
+              placeholder="Search Teams"
               v-model="teamSearch"
             />
-            <div v-if="filteredTeams.length === 0" class="row disabled">
-              <span>{{ teams.length === 0 ? 'No teams in selected seasons' : 'No matching teams' }}</span>
-            </div>
-
             <label
               v-for="team in filteredTeams"
               :key="team"
-              class="row"
+              class="list-item team-item"
+              :class="{ checked: selectedTeamNames.includes(team) }"
             >
               <input
                 type="checkbox"
                 :checked="selectedTeamNames.includes(team)"
-                @change="toggleTeamName(team, ($event.target as HTMLInputElement).checked)"
+                @change="
+                  toggleTeamName(
+                    team,
+                    ($event.target as HTMLInputElement).checked,
+                  )
+                "
               />
               <span>{{ team }}</span>
             </label>
+            <div v-if="filteredTeams.length === 0" class="empty">
+              {{
+                teams.length === 0
+                  ? "Select seasons to see teams"
+                  : "No matches"
+              }}
+            </div>
           </div>
         </section>
       </div>
-
+      <div class="bottom-border"></div>
       <NamePromptDialog
         :open="dialogOpen"
         :title="dialogTitle"
@@ -477,248 +555,352 @@ async function uploadScoutFiles() {
 .home-layout {
   display: flex;
   height: 100%;
-}
-
-.home-wrap {
-  height: 100%;
-  overflow: auto;
-  padding: 16px;
-}
-
-.home-top-actions {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 420px));
-  justify-content: center;
-  gap: 10px;
-}
-
-.upload-btn {
-  justify-self: center;
-  border: 1px solid var(--accent-border);
-  background: var(--accent-soft);
-  color: var(--accent);
-  border-radius: 8px;
-  padding: 8px 12px;
-  cursor: pointer;
-}
-
-.upload-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.upload-error {
-  margin: 8px auto 0;
-  max-width: 420px;
-  color: #e81123;
-  font-size: 12px;
-}
-
-.upload-success {
-  margin: 8px auto 0;
-  max-width: 420px;
-  color: #4caf50;
-  font-size: 12px;
-}
-
-.load-note {
-  margin: 10px auto 0;
-  max-width: 860px;
-  border: 1px solid var(--border-soft);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--surface) 48%, transparent);
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.4;
-  padding: 9px 12px;
-}
-
-.selector-card {
-  display: grid;
-  justify-content: center;
-  grid-template-columns: repeat(3, minmax(0, 420px));
-  gap: 10px;
-  margin-top: 22px;
-}
-
-.viewer-card {
-  border: 1px solid var(--border-soft);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--surface) 56%, transparent);
+  min-height: 0;
   overflow: hidden;
-  min-height: 280px;
 }
 
-.tab-strip {
-  display: flex;
-  align-items: center;
-  min-height: 38px;
-  border-bottom: 1px solid var(--border-soft);
-  padding: 0 8px;
-  background: color-mix(in srgb, var(--surface) 42%, transparent);
-}
-
-.tab {
-  border: 1px solid var(--border-soft);
-  border-bottom-color: transparent;
-  border-radius: 8px 8px 0 0;
-  background: var(--bg);
-  color: var(--fg);
-  font-size: 12px;
-  padding: 6px 10px;
-}
-
-.tab-placeholder {
-  color: var(--text-muted);
-  font-size: 12px;
-}
-
-.viewer-body {
-  position: relative;
-  min-height: 240px;
-  padding: 8px;
-}
-
-.viewer-body.empty {
-  padding: 0;
-}
-
-.col {
-  border: 1px solid var(--border-soft);
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--surface) 56%, transparent);
-  padding: 12px;
+.workspace {
+  flex: 1;
+  height: 100%;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
-  max-height: calc(100vh - 140px);
 }
 
-.col-teams {
-  max-height: 300px;
-}
-
-.col-scroll {
-  flex: 1;
-  overflow-y: auto;
-  min-height: 0;
-}
-
-.team-search {
-  width: 100%;
-  border: 1px solid var(--border-soft);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--fg);
-  font-size: 12px;
-  padding: 5px 8px;
-  margin-bottom: 6px;
-  outline: none;
-}
-
-.team-search::placeholder {
-  color: var(--text-muted);
-}
-
-.team-search:focus {
-  border-color: var(--accent-border);
-}
-
-.head {
+.workspace-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 8px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border-soft);
+  flex-shrink: 0;
 }
 
-.head h2 {
-  margin: 0;
-  font-size: 14px;
+.bottom-border {
+  border-bottom: 1px solid var(--border-soft);
 }
 
-.actions {
+.header-left {
   display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.logo-mark {
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  color: var(--accent);
+  font-family: "Cascadia Mono", monospace;
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: -0.04em;
+  flex-shrink: 0;
+}
+
+.header-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.page-title {
+  font-size: 16px;
+  margin: 0;
+  letter-spacing: -0.02em;
+}
+
+.page-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
   gap: 6px;
 }
 
-.actions button {
-  background: var(--surface-soft);
-  border: 1px solid var(--border-soft);
-  color: var(--fg);
-  width: 26px;
-  height: 26px;
-  border-radius: 6px;
-  cursor: pointer;
+.count-badge {
+  display: inline-flex;
+  align-items: center;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 10px;
+  font-family: "Cascadia Mono", monospace;
+  line-height: 18px;
+  font-weight: 600;
 }
 
-.actions button.active {
+.import-cta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--accent-border);
+  border-radius: 7px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  padding: 7px 14px;
+  font-family: "Cascadia Mono", monospace;
+  font-weight: 600;
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    transform 80ms ease;
+}
+
+.import-cta:hover {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.import-cta:active {
+  transform: scale(0.97);
+}
+
+.import-cta:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.toast {
+  padding: 6px 20px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.toast-err {
+  color: #e81123;
+  background: color-mix(in srgb, #e81123 6%, transparent);
+  border-bottom-color: color-mix(in srgb, #e81123 20%, var(--border-soft));
+}
+
+.toast-ok {
+  color: #4caf50;
+  background: color-mix(in srgb, #4caf50 6%, transparent);
+  border-bottom-color: color-mix(in srgb, #4caf50 20%, var(--border-soft));
+}
+
+.columns {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  max-height: 400px;
+  gap: 0;
+  border-top: 1px solid var(--border-soft);
+}
+
+.col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-right: 1px solid var(--border-soft);
+}
+
+.col:last-child {
+  border-right: none;
+}
+
+.col-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 9px 14px;
+  font-family: "Cascadia Mono", monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--surface) 25%, transparent);
+  flex-shrink: 0;
+}
+
+.col-btns {
+  display: flex;
+  gap: 3px;
+}
+
+.micro-btn {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  opacity: 0.5;
+  transition:
+    opacity 100ms ease,
+    background 100ms ease;
+}
+
+.micro-btn:hover {
+  opacity: 1;
+  background: var(--surface-soft);
+}
+
+.micro-btn:disabled {
+  opacity: 0.25;
+  cursor: not-allowed;
+}
+
+.micro-btn.editing {
   background: var(--accent-soft);
   border-color: var(--accent-border);
   color: var(--accent);
+  opacity: 1;
 }
 
-.row {
+.col-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.list-item {
   display: flex;
   align-items: center;
   gap: 8px;
   font-size: 13px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  cursor: pointer;
   color: var(--fg);
-  padding: 6px 2px;
+  transition: background 80ms ease;
 }
 
-.row-btn {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  width: 100%;
-  border: 1px solid transparent;
-  border-radius: 6px;
+.association-item {
+  border: none;
   background: transparent;
   text-align: left;
-  cursor: pointer;
+  width: 100%;
+  font: inherit;
+  justify-content: flex-start;
 }
 
-.row-btn:hover {
+.association-item:hover {
   background: var(--surface-soft);
 }
 
-.row-btn.selected {
+.association-item.picked {
   background: var(--accent-soft);
-  border-color: var(--accent-border);
 }
 
-.row-left {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
+.association-item.picked .association-name {
+  color: var(--accent);
+  font-weight: 600;
 }
 
-.delete-btn {
-  width: 22px;
-  height: 22px;
-  border: 1px solid transparent;
-  border-radius: 6px;
+.association-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.association-meta {
+  font-family: "Cascadia Mono", monospace;
+  font-size: 10px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+  border-radius: 3px;
+  padding: 1px 5px;
+  line-height: 16px;
+}
+
+.season-item.checked {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.season-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.select-all-item {
+  margin-bottom: 2px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-soft);
+  border-radius: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.select-all-text {
+  font-size: 12px;
+}
+
+.team-item.checked {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.del-btn {
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 4px;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  flex-shrink: 0;
+  transition:
+    color 80ms ease,
+    background 80ms ease;
 }
 
-.delete-btn:hover {
+.del-btn:hover {
   color: #e81123;
-  border-color: color-mix(in srgb, #e81123 35%, var(--border-soft));
-  background: color-mix(in srgb, #e81123 8%, transparent);
+  background: color-mix(in srgb, #e81123 10%, transparent);
 }
 
-.row-season {
-  justify-content: space-between;
-}
-
-.select-all {
+.filter-input {
+  width: 100%;
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 12px;
+  padding: 5px 8px;
   margin-bottom: 4px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--border-soft);
+  outline: none;
 }
 
-.disabled {
-  opacity: 0.6;
+.filter-input::placeholder {
+  color: var(--text-muted);
+}
+
+.filter-input:focus {
+  border-color: var(--accent-border);
+}
+
+.empty {
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 10px 4px;
+  opacity: 0.65;
 }
 </style>
